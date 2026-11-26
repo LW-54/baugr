@@ -1,4 +1,0 @@
-[promises."svc:http"]
-cardinality = "exclusive"
-[promises."svc:http".payload]
-port = { type = "integer", required = true }

@@ -1,31 +1,28 @@
-# Baugr — thin zero-logic developer shortcuts (all real logic lives in `baugr`, `cargo`, and `lake`)
+# Baugr — thin zero-logic developer shortcuts (all real logic lives in `cargo`, `lake`, and `nix`)
 
 default:
     @just --list
 
-# Fast Rust format, pedantic clippy, and full unit + golden conformance test suite
+# Rust format, pedantic clippy, rustdoc, and full unit/domain/property test suite
 test:
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets -- --deny warnings
-    cargo test --workspace
+    cargo fmt -- --check
+    cargo clippy --all-targets -- --deny warnings
+    RUSTDOCFLAGS="--deny warnings" cargo doc --no-deps
+    cargo test
 
-# Build Lean 4 specification + oracle and verify 0 sorryAx across all 54 theorems
+# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 20 audited theorems
 lean:
     cd lean && lake build Baugr baugr-oracle && lake env lean Baugr/Audit.lean
 
-# Run Differential Randomized Testing (Rust baugr-core vs Lean 4 baugr-oracle) on smart-grid
-drt cases='500':
-    cargo run -p baugr-cli -- --root examples/smart-grid drt --oracle lean/.lake/build/bin/baugr-oracle --cases {{cases}}
-
-# Generate mdBook Markdown + Mermaid docs for the smart-grid example
-doc out='/tmp/baugr-smart-grid-docs':
-    cargo run -p baugr-cli -- --root examples/smart-grid graph --json | cargo run -p baugr-doc -- --out {{out}} --title "Smart Grid Architecture"
+# Run 500-case Rust ↔ Lean 4 Differential Randomized Testing (Cedar VGD)
+drt: lean
+    BAUGR_ORACLE=lean/.lake/build/bin/baugr-oracle cargo test --test drt
 
 # Run full hermetic Nix flake verification suite
 check:
     nix flake check -L
 
-# Format Nix and Rust sources
+# Format Rust and Nix sources
 fmt:
-    cargo fmt --all
+    cargo fmt
     alejandra flake.nix

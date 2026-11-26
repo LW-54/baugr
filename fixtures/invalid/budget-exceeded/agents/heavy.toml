@@ -1,3 +1,0 @@
-id = "heavy"
-[use]
-"cap:mb" = { amount = 128, priority = 0 }

@@ -1,3 +1,0 @@
-id = "dev-box"
-attributes = ["auth:principal", "env:dev"]
-contains = ["claimer"]

@@ -1,9 +1,0 @@
-id = "solar-inverter"
-description = "Photovoltaic inverter supplying 40 kW of power and telemetry"
-
-[offer]
-"power:kw" = 40
-
-[offer."grid:telemetry".solar]
-tags = ["source:solar"]
-interval_ms = 1000

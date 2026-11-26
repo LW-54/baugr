@@ -1,3 +1,0 @@
-strict = true
-[promises."known:cap"]
-cardinality = "exclusive"

@@ -1,3 +1,0 @@
-id = "microgrid"
-description = "Top-level autonomous microgrid composing substation and read-only auditor"
-contains = ["substation", "auditor"]

@@ -1,4 +1,0 @@
-id = "collector-a"
-
-[use."event:stream".keep-only]
-selector = { kind = "inter", left = "stream", right = "keep" }

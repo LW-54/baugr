@@ -1,4 +1,0 @@
-id = "bot"
-attributes = ["auth:principal", "role:bot"]
-[offer."key:claim".master]
-tags = ["cls:secret"]

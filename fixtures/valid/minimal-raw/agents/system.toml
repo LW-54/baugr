@@ -1,6 +1,0 @@
-id = "system"
-description = "Minimal closed Dressed Superagent in pure ERG-L0 syntax"
-contains = [
-  { agent = "provider" },
-  { agent = "consumer" },
-]

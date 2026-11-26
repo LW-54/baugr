@@ -1,4 +1,0 @@
-id = "root"
-contains = ["heavy"]
-[internal.offer]
-"cap:mb" = 64

@@ -1,5 +1,5 @@
 {
-  description = "Baugr — Universal Promise Theory & Semantic Spacetime γ(3,4) Verification Framework";
+  description = "Baugr — Formally Verified Promise Theory & Semantic Spacetime γ(3,4) Library";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -29,44 +29,40 @@
           ./Cargo.lock
           ./.clippy.toml
           ./deny.toml
-          ./crates
-          ./examples
-          ./fixtures
+          ./src
+          ./tests
         ];
       };
       commonArgs = {
-        pname = "baugr-workspace";
-        version = "0.1.0";
+        pname = "baugr";
+        version = "0.2.0";
         inherit src;
         strictDeps = true;
       };
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
     in {
-      baugr = craneLib.buildPackage (commonArgs
-        // {
-          inherit cargoArtifacts;
-          pname = "baugr";
-          cargoExtraArgs = "-p baugr-cli";
-          doCheck = false;
-          meta.mainProgram = "baugr";
-        });
-      baugr-doc = craneLib.buildPackage (commonArgs
-        // {
-          inherit cargoArtifacts;
-          pname = "baugr-doc";
-          cargoExtraArgs = "-p baugr-doc";
-          doCheck = false;
-          meta.mainProgram = "baugr-doc";
-        });
       clippy = craneLib.cargoClippy (commonArgs
         // {
           inherit cargoArtifacts;
-          cargoClippyExtraArgs = "--workspace --all-targets -- --deny warnings";
+          cargoClippyExtraArgs = "--all-targets -- --deny warnings";
         });
       test = craneLib.cargoTest (commonArgs // {inherit cargoArtifacts;});
+      drt = oracle:
+        craneLib.cargoTest (commonArgs
+          // {
+            inherit cargoArtifacts;
+            pnameSuffix = "-drt";
+            cargoTestExtraArgs = "--test drt";
+            BAUGR_ORACLE = "${oracle}/bin/baugr-oracle";
+          });
+      doc = craneLib.cargoDoc (commonArgs
+        // {
+          inherit cargoArtifacts;
+          RUSTDOCFLAGS = "--deny warnings";
+        });
       fmt = craneLib.cargoFmt {
-        pname = "baugr-workspace";
-        version = "0.1.0";
+        pname = "baugr";
+        version = "0.2.0";
         inherit src;
       };
     };
@@ -74,11 +70,12 @@
     mkOracle = pkgs:
       pkgs.stdenv.mkDerivation {
         pname = "baugr-oracle";
-        version = "0.1.0";
+        version = "0.2.0";
         src = lib.fileset.toSource {
           root = ./lean;
           fileset = lib.fileset.unions [
             ./lean/lakefile.toml
+            ./lean/lake-manifest.json
             ./lean/Baugr.lean
             ./lean/Baugr
           ];
@@ -103,17 +100,8 @@
           cp .lake/build/bin/baugr-oracle $out/bin/baugr-oracle
         '';
       };
-
-    smartGridSrc = lib.fileset.toSource {
-      root = ./examples/smart-grid;
-      fileset = ./examples/smart-grid;
-    };
   in {
-    packages = forAllSystems ({pkgs, ...}: let
-      rust = mkRust pkgs;
-    in {
-      default = rust.baugr;
-      inherit (rust) baugr baugr-doc;
+    packages = forAllSystems ({pkgs, ...}: {
       baugr-oracle = mkOracle pkgs;
     });
 
@@ -123,25 +111,10 @@
     in {
       fmt = rust.fmt;
       clippy = rust.clippy;
+      doc = rust.doc;
       test = rust.test;
       lean-audit = oracle;
-
-      smart-grid-drt = pkgs.runCommand "baugr-smart-grid-drt" {} ''
-        ${rust.baugr}/bin/baugr --root ${smartGridSrc} check
-        ${rust.baugr}/bin/baugr --root ${smartGridSrc} drt --oracle ${oracle}/bin/baugr-oracle --cases 500
-        ${rust.baugr}/bin/baugr --root ${smartGridSrc} graph --impact battery-bank
-        ${rust.baugr}/bin/baugr --root ${smartGridSrc} project trip-breaker
-        echo "BAUGR_SMART_GRID_DRT_OK" > $out
-      '';
-
-      doc-pipe = pkgs.runCommand "baugr-doc-pipe" {} ''
-        ${rust.baugr}/bin/baugr --root ${smartGridSrc} graph --json           | ${rust.baugr-doc}/bin/baugr-doc --out $out --title "Smart Grid Architecture"
-        test -s $out/SUMMARY.md
-        test -s $out/index.md
-        test -s $out/promises.md
-        test -s $out/scopes/substation.md
-        test -s $out/scopes/microgrid.md
-      '';
+      drt = rust.drt oracle;
     });
 
     devShells = forAllSystems ({pkgs, ...}: {

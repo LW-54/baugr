@@ -1,32 +1,23 @@
-[workspace]
-resolver = "2"
-members = [
-  "crates/baugr-core",
-  "crates/baugr-cli",
-  "crates/baugr-doc",
-]
-
-[workspace.package]
-version = "0.1.0"
+[package]
+name = "baugr"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
+description = "Formally verified Promise Theory and Semantic Spacetime γ(3,4) algebra"
 repository = "https://github.com/LW-54/baugr"
+keywords = ["promise-theory", "semantic-spacetime", "formal-methods", "no-std", "graph"]
+categories = ["algorithms", "data-structures", "no-std"]
 
-[workspace.dependencies]
-baugr-core = { version = "0.1.0", path = "crates/baugr-core" }
-clap = { version = "4.5", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0"
-toml = "0.8"
+# Zero runtime dependencies — pure #![no_std] + alloc Rust library.
+[dependencies]
 
-[workspace.lints.rust]
+[lints.rust]
 unsafe_code = "forbid"
 unused_crate_dependencies = "deny"
 missing_debug_implementations = "warn"
 missing_docs = "warn"
 
-[workspace.lints.clippy]
+[lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"

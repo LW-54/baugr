@@ -1,8 +1,0 @@
-id = "breaker-critical"
-description = "Protection breaker governing critical-zone feeders"
-
-[offer."operator:claim".trip-critical]
-tags = ["cls:breaker"]
-
-[use."breaker:zone".critical]
-selector = "zone:critical"

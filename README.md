@@ -1,71 +1,42 @@
-# Baugr (`baugr`)
+# Baugr
 
-> **Old Norse: *baugr* (Oath Ring)** — A universal, formally verified **Promise Theory** & **Semantic Spacetime $\gamma(3,4)$** compiler, policy verifier, and graph projection toolkit.
+A minimal, `#![no_std]` (`alloc`), `#![forbid(unsafe_code)]`, **zero-runtime-dependency**, formally verified Rust + Lean 4 library for **Promise Theory** and **Semantic Spacetime $\gamma(3,4)$**.
 
-Baugr is completely **domain-agnostic** (zero OS, container, cloud, or Nix assumptions). Use it to verify autonomous multi-agent topologies, distributed microservices, electrical microgrids, Kubernetes/Terraform overlays, AI agent capability boundaries, or infrastructure fleets.
+Derived directly from the primary mathematical papers of Jan Bergstra and Mark Burgess:
+- `arXiv:0810.3294v5` — *A Static Theory of Promises* (scope vs. promisee, relative/absolute keeping, subjective assessment)
+- `arXiv:1401.3381v1` — *Promises, Impositions, and other Directionals* (2 polarities, compliance as conditional promise)
+- `arXiv:1411.5563` — *Spacetimes with Semantics (I)* (mutual-information overlap $b_1 \cap b_2$, assisted quenching, coordination $C(b)$)
+- `arXiv:1505.01716v1` — *Spacetimes with Semantics (II)* (Promise Valency `#n`, opaque/transparent dressed superagents, coarse-graining directories, irreducible emergent promises, tenancy)
+- `arXiv:1608.02193` — *Spacetimes with Semantics (III)* (four irreducible link axes, multi-condition aggregation)
+- `arXiv:2506.07756v2` — *Agent Semantics, Semantic Spacetime, and Graphical Reasoning* (strict $\gamma(3,4)$ `(Event, Thing, Concept)` $\times$ `(Near, ±LeadsTo, ±Contains, ±Expresses)`)
+- `arXiv:2606.08552v1` — *Quantitative Promise Theory* (observer-local assessment $\alpha_a(\pi)$, self & assisted quenching)
 
----
+## Architecture (4 Modules)
 
-## Core Design
+| Module | Mathematical Primitives |
+| :--- | :--- |
+| [`src/promise.rs`](src/promise.rs) | `Body<O, U>` (`Offer` / `Use`), `BodyAlgebra` ($b_1 \cap b_2$), `AgentSet`, `Cond` (`SelfPromise`, `Assisted`, `Accepted`, `Interior`, monotone `AtLeast`, stratified `Not`), `PromiseSystem`, Kosaraju SCC stratification, observer-local `resolve`, complete-information check |
+| [`src/spacetime.rs`](src/spacetime.rs) | Strict $\gamma(3,4)$ `NodeKind` (`Event`, `Thing`, `Concept`), `LinkKind` (`0, ±1, ±2, ±3`), `SstGraph`, forward/reverse causal light cones, sources/sinks/appointed hubs, quotient `coarse_grain` $\mathbf{G}$ |
+| [`src/projection.rs`](src/projection.rs) | Canonical well-formed functor $\Phi : \text{PromiseSystem} \to \gamma(3,4)$ (`Agent ↦ Thing`, `Promise ↦ Event`, `Intent ↦ Concept`) and `CoarseGrainingDirectory` $\pi_{\text{directory}}$ |
+| [`src/law.rs`](src/law.rs) | Ordered Commutative Monoid `ResourceMonoid` (`u32`..`usize`, `MaxOne`, `Unbounded`, Cartesian products), `ResolutionView`, open composable `ScopeLaw`, standard laws (`ValencyLaw`, `QuorumLaw`, `UniqueProviderLaw`, `DisjointInScope`, `AgreementInScope`) |
 
-1. **Fractal Uniform Agency & Non-Piercing Superagents**: Every node is an autonomous agent exposing an explicit exterior surface ($\Pi_{\mathrm{ext}}$). Dressed Superagents compose children into sealed scopes whose interior bindings can never be pierced from the outside.
-2. **Cardinality-Checked Scoped Binding (`B3`)**: Four orthogonal promise cardinalities — `exclusive` (unique 1:1), `broadcast` (tag-selected fanout), `partitioned` (strictly disjoint handler ownership), and `budgeted` (priority-tiered resource supply/demand).
-3. **Cedar `L3+` `Forbid`-Dominant Authorization**: Boolean set-algebra authorization (`AttrExpr`) over both Superagent and Atomic principals, with sound-and-complete blast-radius and policy-matrix projections.
-4. **Data-Driven `ERG-L2` Schemas**: Optional user-defined `schemas/*.toml` registries drive concise `[offer.*]` / `[use.*]` / `[internal.offer.*]` shorthand, static payload type checking, Draft 2020-12 JSON Schema export (`baugr schema-json`), and automatic Promise Type Catalogs in `baugr-doc` — while desugaring **100% totally** into pure Layer-0 IR verified by Lean 4.
-5. **Semantic Spacetime $\gamma(3,4)$ Spine**: Projects every verified system onto the four orthogonal link types (`CONTAINS`, `FOLLOWS`, `EXPRESSES`, `NEAR`) with reverse causal impact cones and Unix-piped documentation (`baugr graph --json | baugr-doc`).
+## Formal Verification (`lean/Baugr/` — Cedar VGD)
 
----
+- **Zero `Mathlib`, `0` warnings, `0 sorryAx`** across **20 audited theorems** in [`lean/Baugr/Theorems.lean`](lean/Baugr/Theorems.lean):
+  - Knaster-Tarski least fixed point & cycle rejection (`quenchIter_le_any_prefixed`, `cyclic_conditional_never_quenches`)
+  - Stratified negation equivalence on positive systems (`stratified_agrees_with_positive`)
+  - Promise Theory Axiom of Autonomy (`autonomy_unaccepted_offer_inert`)
+  - Exact $\gamma(3,4)$ involution, antisymmetry, transitive closure, Couch/Burgess inference closure, quotient `coarseGrain_wellFormed`, and canonical `projectSst_wellFormed`
+  - **Crown-Jewel Unification Theorem**: `perturbation_in_reverse_cone` — observer-local assessment perturbations are strictly bounded by the $\gamma(3,4)$ reverse causal light cone $J^-_\Phi(\pi)$
+  - Opaque superagent non-piercing encapsulation (`opaque_non_piercing`, `opaque_non_piercing_inward`, `opaque_interior_perturbation_contained`)
+  - Generalized monoidal valency withdrawal safety (`valency_withdrawal_safe`) & composable `ScopeLaw` conjunction (`allLaws_cons`)
+- **Mechanical Rust ↔ Lean Lock**: [`tests/drt.rs`](tests/drt.rs) runs **500 randomized Promise Systems** against the compiled Lean 4 `baugr-oracle` verifying `0` divergences across quenched promises, active bindings (+ exact overlap $b_1 \cap b_2$), and $\gamma(3,4)$ edges.
 
-## Formal Guarantees (AWS Cedar VGD)
+## Running Checks
 
-| Artifact | Location | Guarantee |
-| :--- | :--- | :--- |
-| **Pure Promise Theory + SST** | [`lean/Baugr/Theory/`](lean/Baugr/Theory/) | Pure Burgess/Bergstra semantics (`imposition_never_cooperates`, `projectAgentSST`, `siblingFollowsEdges_non_piercing`) |
-| **Engine & Type Soundness** | [`lean/Baugr/Engine/`](lean/Baugr/Engine/) | **54 machine-checked Lean 4 theorems (`0 sorryAx`)**, incl. `Resolve` **Progress & Preservation** (`valid_agent_tree_resolves_safely`, `resolve_parent_scope_non_piercing`) and `checkAgentTree_atomic_sound` |
-| **Pure Wasm-Ready Kernel** | [`crates/baugr-core/`](crates/baugr-core/) | `unsafe_code = "forbid"`, `clippy::pedantic --deny warnings`, zero `std::fs`/OS I/O, zero domain strings (guarded by unit tests) |
-| **Differential Testing (DRT)** | `baugr drt --oracle baugr-oracle` | Bit-for-bit Rust $\leftrightarrow$ Lean 4 oracle equivalence across checker, `Resolve`, SST $\gamma(3,4)$, and Cedar |
-
----
-
-## Quickstart (`examples/smart-grid`)
-
-```sh
-# 1. Verify the autonomous microgrid (schemas, B3 scopes, power budget, invariants, Cedar auth)
-baugr --root examples/smart-grid check
-
-# 2. Compute reverse operational impact cone if battery-bank fails
-baugr --root examples/smart-grid graph --impact battery-bank
-
-# 3. Explain a Cedar authorization verdict
-baugr --root examples/smart-grid explain auditor trip-breaker trip-critical
-
-# 4. Inspect canonical Layer-0 desugared IR or export IDE JSON Schema (Draft 2020-12)
-baugr --root examples/smart-grid desugar --agent hospital-load
-baugr --root examples/smart-grid schema-json --kind agent > agent.schema.json
-
-# 5. Pipe Semantic Spacetime JSON into mdBook Markdown + Mermaid docs
-baugr --root examples/smart-grid graph --json \
-  | baugr-doc --out /tmp/smart-grid-docs --title "Smart Grid Architecture"
+```bash
+just test   # cargo fmt, clippy::pedantic, rustdoc, unit + 3-domain + 500 randomized property tests
+just lean   # Lean 4 build + 0-sorryAx axiom audit
+just drt    # 500-case Rust ↔ Lean 4 differential randomized testing
+just check  # Full hermetic `nix flake check -L` (6 checks)
 ```
-
-Multiple `--root <dir>` overlays compose fractally in order (`agents/**`, `schemas/**`, `profiles/**`, `policies/**` are discovered recursively with zero artificial barriers).
-
----
-
-## Repository Layout
-
-```text
-├── crates/
-│   ├── baugr-core/    # Pure, std::fs-free Wasm-ready Promise Theory & ERG-L2 kernel
-│   ├── baugr-cli/     # `baugr` compiler CLI + golden conformance integration tests
-│   └── baugr-doc/     # `baugr-doc` pure Unix SST -> mdBook Markdown/Mermaid filter
-├── lean/              # Lean 4 specification (`Baugr.{Theory,Engine,Oracle}`) & Audit (54 theorems)
-├── examples/          # Domain-agnostic `smart-grid` end-to-end tutorial
-├── fixtures/          # Golden valid & invalid conformance fixtures
-├── flake.nix          # Hermetic Nix build, Lean 4 audit, DRT, and test checks
-└── justfile           # Thin developer workflow shortcuts
-```
-
-## License
-
-MIT — see [`LICENSE`](LICENSE).
