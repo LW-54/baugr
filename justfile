@@ -1,16 +1,16 @@
-# Baugr — thin zero-logic developer shortcuts (all real logic lives in `cargo`, `lake`, and `nix`)
+# Baugr — thin zero-logic developer shortcuts (all real logic lives in `cargo`, `lake`, `typst`, and `nix`)
 
 default:
     @just --list
 
-# Rust format, pedantic clippy, rustdoc, and full unit/domain/property test suite
+# Rust format, pedantic clippy, rustdoc, unit/domain/property tests, and doctests
 test:
     cargo fmt -- --check
     cargo clippy --all-targets -- --deny warnings
     RUSTDOCFLAGS="--deny warnings" cargo doc --no-deps
     cargo test
 
-# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 20 audited theorems
+# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 26 audited theorems
 lean:
     cd lean && lake build Baugr baugr-oracle && lake env lean Baugr/Audit.lean
 
@@ -18,7 +18,11 @@ lean:
 drt: lean
     BAUGR_ORACLE=lean/.lake/build/bin/baugr-oracle cargo test --test drt
 
-# Run full hermetic Nix flake verification suite
+# Compile formal Typst specification paper to paper/baugr.pdf
+paper:
+    typst compile paper/baugr.typ paper/baugr.pdf
+
+# Run full hermetic Nix flake verification suite (7 checks)
 check:
     nix flake check -L
 

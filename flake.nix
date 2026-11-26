@@ -31,6 +31,7 @@
           ./deny.toml
           ./src
           ./tests
+          ./examples
         ];
       };
       commonArgs = {
@@ -100,14 +101,37 @@
           cp .lake/build/bin/baugr-oracle $out/bin/baugr-oracle
         '';
       };
+
+    mkPaper = pkgs:
+      pkgs.stdenvNoCC.mkDerivation {
+        pname = "baugr-paper";
+        version = "0.2.0";
+        src = lib.fileset.toSource {
+          root = ./paper;
+          fileset = lib.fileset.unions [
+            ./paper/baugr.typ
+            ./paper/refs.bib
+          ];
+        };
+        nativeBuildInputs = [pkgs.typst];
+        buildPhase = ''
+          typst compile baugr.typ baugr.pdf
+        '';
+        installPhase = ''
+          mkdir -p $out
+          cp baugr.pdf $out/baugr.pdf
+        '';
+      };
   in {
     packages = forAllSystems ({pkgs, ...}: {
       baugr-oracle = mkOracle pkgs;
+      paper = mkPaper pkgs;
     });
 
     checks = forAllSystems ({pkgs, ...}: let
       rust = mkRust pkgs;
       oracle = mkOracle pkgs;
+      paper = mkPaper pkgs;
     in {
       fmt = rust.fmt;
       clippy = rust.clippy;
@@ -115,6 +139,7 @@
       test = rust.test;
       lean-audit = oracle;
       drt = rust.drt oracle;
+      inherit paper;
     });
 
     devShells = forAllSystems ({pkgs, ...}: {
@@ -124,6 +149,7 @@
           pkgs.cargo
           pkgs.rustfmt
           pkgs.clippy
+          pkgs.typst
           pkgs.just
           pkgs.alejandra
         ];

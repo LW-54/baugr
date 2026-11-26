@@ -3,23 +3,40 @@
 -/
 import Baugr
 
+-- T5a–T5c: Strict γ(3,4) Semantic Spacetime & Coarse-Graining
 #print axioms Baugr.LinkKind.inv_inv
 #print axioms Baugr.allowed_antisym
 #print axioms Baugr.allowed_pos_trans
 #print axioms Baugr.inference_contains_expresses
 #print axioms Baugr.inference_near_expresses
 #print axioms Baugr.coarseGrain_wellFormed
+
+-- T1–T3: Knaster-Tarski Quenching, Cycle Rejection, Convergence & Stratification Independence
 #print axioms Baugr.evalCond_mono
+#print axioms Baugr.evalCond_mono_pol
 #print axioms Baugr.quenchStep_mono
 #print axioms Baugr.quenchIter_le_any_prefixed
 #print axioms Baugr.quenchIter_chain
 #print axioms Baugr.cyclic_conditional_never_quenches
 #print axioms Baugr.stratified_agrees_with_positive
+#print axioms Baugr.stratumStep_mono
+#print axioms Baugr.stratumIter_fixed_point
+#print axioms Baugr.evalStratified_fixed_point
+#print axioms Baugr.stratification_independent
+
+-- T4: Axiom of Autonomy
 #print axioms Baugr.autonomy_unaccepted_offer_inert
+
+-- T5d & T6: Canonical Functor Φ & Reverse Light Cone Perturbation Containment
 #print axioms Baugr.projectSst_wellFormed
 #print axioms Baugr.perturbation_in_reverse_cone
+
+-- T7: Opaque Superagent Encapsulation
+#print axioms Baugr.noOpaqueWall_symm
 #print axioms Baugr.opaque_non_piercing
 #print axioms Baugr.opaque_non_piercing_inward
 #print axioms Baugr.opaque_interior_perturbation_contained
+
+-- T8: Monoidal Valency & Composable ScopeLaws
 #print axioms Baugr.valency_withdrawal_safe
 #print axioms Baugr.allLaws_cons

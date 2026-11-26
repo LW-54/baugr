@@ -15,5 +15,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v17
       - uses: DeterminateSystems/magic-nix-cache-action@v12
-      - name: Run all hermetic Baugr checks (fmt, clippy, rustdoc, tests, Lean 4 audit, 500-case DRT)
+      - name: Run all 7 hermetic Baugr checks (fmt, clippy, rustdoc, tests, Lean 4 audit, 500-case DRT, Typst paper)
         run: nix flake check -L

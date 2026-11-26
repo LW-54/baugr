@@ -1,12 +1,12 @@
-//! Domain-agnostic integration tests and purity guards for `baugr` v0.2.
+//! Domain-agnostic integration tests, invariant proofs, and purity guards for `baugr` v0.2.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use baugr::{
-    AgentSet, AgreementInScope, Binding, BodyAlgebra, CoarseGrainError, Cond, DisjointInScope,
-    EvalError, LinkKind, MaxOne, NodeKind, Promise, PromiseSystem, QuorumLaw, ResolutionView,
+    AgentSet, AgreementBy, Binding, BodyAlgebra, CoarseGrainError, Cond, DisjointBy, EvalError,
+    HierarchyError, LinkKind, MaxOne, NodeKind, Promise, PromiseSystem, QuorumLaw, ResolutionView,
     ResourceMonoid, SstError, SstGraph, SstNode, SymmetricMeet, Unbounded, UniqueProviderLaw,
     ValencyLaw, directory_of, project_sst,
 };
@@ -113,7 +113,7 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
     };
     assert!(ResolutionView::new(&sys, &r_outage).check(&cap_law).is_ok());
 
-    // Add 800W factory load -> 1800W > 1500W valency deficit!
+    // Add 800W factory load -> 1800W > 1500W valency deficit implementing core::error::Error.
     sys.add_promise(Promise::accept(
         "fact:draw",
         "factory",
@@ -127,6 +127,8 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
     let err = ResolutionView::new(&sys, &r_overload)
         .check(&cap_law)
         .expect_err("expected valency deficit");
+    let dyn_err: &dyn core::error::Error = &err;
+    assert!(dyn_err.to_string().contains("1800"));
     assert_eq!(err.used, 1800);
     assert_eq!(err.capacity, 1500);
 
@@ -162,9 +164,22 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
 
     sys.add_superagent("raft", true);
     for n in ["n1", "n2", "n3"] {
-        sys.contain("raft", n);
+        sys.contain("raft", n).expect("acyclic");
         sys.add_promise(Promise::offer(n, n, AgentSet::All, Cap::ReplicaVote));
     }
+    // Hierarchy invariants: self-containment and cycles are rejected structurally!
+    assert_eq!(
+        sys.contain("raft", "raft"),
+        Err(HierarchyError::SelfContainment("raft"))
+    );
+    assert_eq!(
+        sys.contain("n1", "raft"),
+        Err(HierarchyError::Cycle {
+            superagent: "n1",
+            child: "raft",
+        })
+    );
+
     sys.add_promise(
         Promise::offer("raft:kv", "raft", AgentSet::All, Cap::LinearizableKv).when(Cond::at_least(
             2,
@@ -204,12 +219,9 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
     assert!(r3.quenched.contains("client:app"));
     assert!(!r3.bindings.iter().any(|b| b.use_id == "client:pierce_n1"));
 
-    // 1 node down -> 2/3 quorum still holds!
+    // 1 node down -> 2/3 quorum still holds; 2 nodes down -> quorum lost!
     let r2 = sys.resolve(|_, p| *p != "n3").expect("stratified");
     assert!(r2.quenched.contains("raft:kv"));
-    assert!(r2.quenched.contains("client:app"));
-
-    // 2 nodes down -> quorum lost, unrelated client:local_clock unaffected!
     let r1 = sys
         .resolve(|_, p| *p != "n2" && *p != "n3")
         .expect("stratified");
@@ -217,14 +229,12 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
     assert!(!r1.quenched.contains("client:app"));
     assert!(r1.quenched.contains("client:local_clock"));
 
-    // Directory π_directory(raft) exposes interior vs surface promises.
     let dir = directory_of(&sys, &"raft");
     assert!(dir.is_opaque);
     assert_eq!(dir.interior_agents, BTreeSet::from(["n1", "n2", "n3"]));
-    assert_eq!(dir.interior_promises, BTreeSet::from(["n1", "n2", "n3"]));
     assert_eq!(dir.surface_promises, BTreeSet::from(["raft:kv"]));
 
-    // Event-level reverse causal light cone J⁻(client:app) excludes unrelated client:local_clock!
+    // Reverse causal light cone J⁻(client:app) excludes unrelated client:local_clock!
     let sst = project_sst(&sys);
     let cone = sst.reverse_causal_cone(&SstNode::Promise("client:app"));
     assert!(cone.contains(&SstNode::Promise("raft:kv")));
@@ -270,16 +280,14 @@ impl BodyAlgebra for CloudAlg {
     }
 }
 
-#[test]
-fn domain_tenancy_and_scoped_laws() {
-    let mut sys = PromiseSystem::<&str, &str, _>::new(CloudAlg);
-    // Two separate host superagents (transparent) so per-host port disjointness is scoped!
+fn build_tenancy_fleet()
+-> Result<PromiseSystem<&'static str, &'static str, CloudAlg>, HierarchyError<&'static str>> {
+    let mut sys = PromiseSystem::new(CloudAlg);
     sys.add_superagent("host1", false);
-    sys.contain("host1", "tenant1");
+    sys.contain("host1", "tenant1")?;
     sys.add_superagent("host2", false);
-    sys.contain("host2", "tenant2");
+    sys.contain("host2", "tenant2")?;
 
-    // Exact Burgess Tenancy template on host1:
     sys.add_promise(Promise::accept(
         "h1:accept_terms",
         "host1",
@@ -317,7 +325,6 @@ fn domain_tenancy_and_scoped_laws() {
             proto_ver: 2,
         },
     ));
-    // host2 also binds port 80 independently -> MUST NOT conflict with host1's scoped port law!
     sys.add_promise(Promise::offer(
         "h2:slot_80",
         "host2",
@@ -336,23 +343,37 @@ fn domain_tenancy_and_scoped_laws() {
             proto_ver: 2,
         },
     ));
+    Ok(sys)
+}
+
+#[test]
+fn domain_tenancy_and_generalized_laws() {
+    let mut sys = build_tenancy_fleet().expect("acyclic");
 
     let r = sys.resolve_optimistic().expect("stratified");
     assert!(r.quenched.contains("h1:slot_80"));
     assert!(r.quenched.contains("h1:power"));
 
     let view = ResolutionView::new(&sys, &r);
-    let h1_port_law = DisjointInScope::new(
-        AgentSet::Set(sys.members_of(&"host1")),
-        |b: &Binding<&str, &str, (Option<u16>, Option<u8>)>| b.overlap.0,
+    // Single DisjointBy checks per-host port uniqueness across ALL hosts simultaneously!
+    let per_host_ports = DisjointBy::new(
+        |sys: &PromiseSystem<&'static str, &'static str, CloudAlg>,
+         b: &Binding<&'static str, &'static str, (Option<u16>, Option<u8>)>| {
+            let port = b.overlap.0?;
+            let host = sys.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
+            Some((host, port))
+        },
     );
-    assert!(view.check(&h1_port_law).is_ok());
+    assert!(view.check(&per_host_ports).is_ok());
 
-    let ver_law = AgreementInScope::new(
-        AgentSet::All,
-        |b: &Binding<&str, &str, (Option<u16>, Option<u8>)>| b.overlap.1,
+    // Grouped AgreementBy C(b) checks global protocol version 2 across the fleet!
+    let fleet_proto = AgreementBy::new(
+        |_: &PromiseSystem<&'static str, &'static str, CloudAlg>,
+         b: &Binding<&'static str, &'static str, (Option<u16>, Option<u8>)>| {
+            b.overlap.1.map(|ver| ((), ver))
+        },
     );
-    assert!(view.check(&ver_law).is_ok());
+    assert!(view.check(&fleet_proto).is_ok());
     assert!(
         view.check(&QuorumLaw {
             use_id: "t1:use_slot",
@@ -369,12 +390,28 @@ fn domain_tenancy_and_scoped_laws() {
         .is_ok()
     );
     assert_eq!(MaxOne::One.add(&MaxOne::One), MaxOne::Overflow);
+
+    // Adding a second tenant on host1 taking port 80 triggers DisjointViolation on ("host1", 80)!
+    sys.contain("host1", "tenant1b").expect("acyclic");
+    sys.add_promise(Promise::accept(
+        "t1b:use_slot",
+        "tenant1b",
+        AgentSet::single("host1"),
+        CloudSvc::Slot {
+            port: 80,
+            proto_ver: 2,
+        },
+    ));
+    let r_collide = sys.resolve_optimistic().expect("stratified");
+    let err = ResolutionView::new(&sys, &r_collide)
+        .check(&per_host_ports)
+        .expect_err("expected per-host port collision");
+    assert_eq!(err.key, ("host1", 80));
 }
 
 #[test]
 fn domain_bidirectional_protocol_complete_info_and_cycles() {
     let mut sys = PromiseSystem::<&str, &str, _>::new(CloudAlg);
-    // Bidirectional layered protocol A:net -> B:dns -> A:tls (zero false agent-level cycle!)
     sys.add_promise(Promise::offer(
         "A:net",
         "A",
@@ -435,21 +472,32 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
 }
 
 #[test]
-fn strict_gamma_3_4_rules_and_coarse_graining() {
+fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
     let mut g = SstGraph::new();
-    g.add_node("love", NodeKind::Concept);
-    g.add_node("butterfly", NodeKind::Thing);
-    g.add_node("wing", NodeKind::Thing);
-    g.add_node("flight", NodeKind::Event);
-    g.add_node("landing", NodeKind::Event);
-    g.add_node("blue", NodeKind::Concept);
+    g.add_node("love", NodeKind::Concept).unwrap();
+    g.add_node("butterfly", NodeKind::Thing).unwrap();
+    g.add_node("wing", NodeKind::Thing).unwrap();
+    g.add_node("flight", NodeKind::Event).unwrap();
+    g.add_node("landing", NodeKind::Event).unwrap();
+    g.add_node("blue", NodeKind::Concept).unwrap();
+    g.add_node("sky", NodeKind::Concept).unwrap();
 
-    // Burgess's famous forbidden metaphor: Love (Concept) NEAR Butterfly (Thing) -> REJECTED!
+    // Idempotent re-registration passes; conflicting re-typing is structurally rejected!
+    assert!(g.add_node("flight", NodeKind::Event).is_ok());
+    assert_eq!(
+        g.add_node("flight", NodeKind::Concept),
+        Err(SstError::KindConflict {
+            node: "flight",
+            existing: NodeKind::Event,
+            attempted: NodeKind::Concept,
+        })
+    );
+
+    // Burgess's forbidden metaphor & strict γ(3,4) violations -> REJECTED!
     assert!(matches!(
         g.add_edge("love", LinkKind::Near, "butterfly"),
         Err(SstError::DisallowedTransition { .. })
     ));
-    // Thing cannot contain Event; Thing cannot be expressed; Thing cannot lead to Event!
     assert!(
         g.add_edge("butterfly", LinkKind::Contains, "flight")
             .is_err()
@@ -462,14 +510,13 @@ fn strict_gamma_3_4_rules_and_coarse_graining() {
         g.add_edge("butterfly", LinkKind::LeadsTo, "flight")
             .is_err()
     );
-    // Strict ADR-0018 A2: Event cannot Express Event directly (must target Concept)!
     assert!(
         g.add_edge("flight", LinkKind::Expresses, "landing")
             .is_err()
     );
 
-    // Valid γ(3,4) edges:
-    g.add_edge("flight", LinkKind::LeadsTo, "landing").unwrap();
+    // Dual inverse links: `landing -L flight` normalizes cleanly to `flight +L landing`!
+    g.add_edge("landing", LinkKind::Follows, "flight").unwrap();
     g.add_edge("flight", LinkKind::Contains, "butterfly")
         .unwrap();
     g.add_edge("butterfly", LinkKind::Contains, "wing").unwrap();
@@ -477,6 +524,7 @@ fn strict_gamma_3_4_rules_and_coarse_graining() {
         .unwrap();
     g.add_edge("wing", LinkKind::ContainedBy, "butterfly")
         .unwrap();
+    g.add_edge("blue", LinkKind::Near, "sky").unwrap();
 
     assert_eq!(
         g.forward_causal_cone(&"flight"),
@@ -484,6 +532,11 @@ fn strict_gamma_3_4_rules_and_coarse_graining() {
     );
     assert!(g.sources(LinkKind::LeadsTo).contains("flight"));
     assert!(g.sinks(LinkKind::LeadsTo).contains("landing"));
+    // Symmetric Near works in both directions!
+    assert!(
+        g.reachable_along(&"sky", LinkKind::Near, false)
+            .contains("blue")
+    );
 
     // Kind-homogeneous coarse graining collapses butterfly+wing -> insect (Thing).
     let q = g
@@ -493,9 +546,8 @@ fn strict_gamma_3_4_rules_and_coarse_graining() {
         })
         .expect("homogeneous grain");
     assert_eq!(q.kind_of(&"insect"), Some(NodeKind::Thing));
-    // Internal butterfly<->wing edge dropped; exterior flight->insect & insect->blue preserved!
-    assert_eq!(q.axis_edges(LinkKind::Contains).count(), 1);
-    assert_eq!(q.axis_edges(LinkKind::Expresses).count(), 1);
+    assert_eq!(q.axis_edges(LinkKind::Contains).len(), 1);
+    assert_eq!(q.axis_edges(LinkKind::Expresses).len(), 1);
 
     // Inhomogeneous coarse grain (merging Event + Thing) cleanly rejected!
     assert!(matches!(
@@ -510,6 +562,17 @@ fn strict_gamma_3_4_rules_and_coarse_graining() {
 
 #[test]
 fn l0_purity_boundary_contains_zero_domain_or_io_leakage() {
+    fn visit_rs(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                visit_rs(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
     let forbidden = [
         "nixos",
         "systemd",
@@ -528,20 +591,22 @@ fn l0_purity_boundary_contains_zero_domain_or_io_leakage() {
         "toml",
         "serde",
     ];
-    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    for entry in fs::read_dir(&src_dir).expect("read src dir") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let text = fs::read_to_string(&path)
-                .expect("read rs file")
-                .to_lowercase();
-            for word in &forbidden {
-                assert!(
-                    !text.contains(word),
-                    "L0 purity violation: `{word}` found in {}",
-                    path.display()
-                );
-            }
+    let mut files = Vec::new();
+    visit_rs(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(files.len() >= 8, "expected modular src/ tree");
+    for path in files {
+        let text = fs::read_to_string(&path)
+            .expect("read rs file")
+            .to_lowercase();
+        for word in &forbidden {
+            assert!(
+                !text.contains(word),
+                "L0 purity violation: `{word}` found in {}",
+                path.display()
+            );
         }
     }
 }

@@ -5,6 +5,19 @@
 //! and `arXiv:1505.01716v1` §3.5–3.7 (`Coarse-graining directory`, Def. L1736).
 //!
 //! Mirrored 1:1 by `lean/Baugr/Projection.lean` (verified by `projectSst_wellFormed`).
+//!
+//! # Example
+//! ```
+//! use baugr::{AgentSet, Cond, Promise, PromiseSystem, SstNode, SymmetricMeet, project_sst};
+//!
+//! let mut sys = PromiseSystem::new(SymmetricMeet::new(|a: &u8, b: &u8| (a == b).then_some(*a)));
+//! sys.add_promise(Promise::offer("p1", "a", AgentSet::single("b"), 1));
+//! sys.add_promise(Promise::accept("u1", "b", AgentSet::single("a"), 1));
+//! sys.add_promise(Promise::offer("p2", "b", AgentSet::All, 2).when(Cond::assisted("u1")));
+//!
+//! let sst = project_sst(&sys);
+//! assert!(sst.reverse_causal_cone(&SstNode::Promise("p2")).contains(&SstNode::Promise("p1")));
+//! ```
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -60,14 +73,15 @@ where
     P: Ord + Clone,
     D: BodyAlgebra,
 {
+    let compat = sys.build_compat_index();
     let mut graph = SstGraph::new();
 
     for a in sys.agents() {
-        graph.add_node(SstNode::Agent(a.clone()), NodeKind::Thing);
+        let _ = graph.add_node(SstNode::Agent(a.clone()), NodeKind::Thing);
     }
     for pr in sys.promises().values() {
-        graph.add_node(SstNode::Promise(pr.id.clone()), NodeKind::Event);
-        graph.add_node(SstNode::Intent(pr.id.clone()), NodeKind::Concept);
+        let _ = graph.add_node(SstNode::Promise(pr.id.clone()), NodeKind::Event);
+        let _ = graph.add_node(SstNode::Intent(pr.id.clone()), NodeKind::Concept);
     }
 
     for (child, par) in sys.parents() {
@@ -96,7 +110,7 @@ where
         );
 
         let mut deps = Vec::new();
-        sys.cond_deps(false, &pr.cond, &mut deps);
+        compat.cond_deps(false, &pr.cond, &mut deps);
         for (dep, _) in deps {
             if sys.promises().contains_key(&dep) {
                 let _ = graph.add_edge(

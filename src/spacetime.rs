@@ -13,8 +13,27 @@
 //! - `±1` [`LinkKind::LeadsTo`] / [`LinkKind::Follows`] (`±L`): causal / temporal order
 //! - `±2` [`LinkKind::Contains`] / [`LinkKind::ContainedBy`] (`±C`): spatial containment
 //! - `±3` [`LinkKind::Expresses`] / [`LinkKind::ExpressedBy`] (`±E`): attribute / promise expression
+//!
+//! # Example
+//! ```
+//! use baugr::{LinkKind, NodeKind, SstGraph};
+//!
+//! let mut g = SstGraph::new();
+//! g.add_node("flight", NodeKind::Event).unwrap();
+//! g.add_node("landing", NodeKind::Event).unwrap();
+//! g.add_node("butterfly", NodeKind::Thing).unwrap();
+//! g.add_node("blue", NodeKind::Concept).unwrap();
+//!
+//! // Inverse links normalize automatically (`landing -L flight` == `flight +L landing`).
+//! g.add_edge("landing", LinkKind::Follows, "flight").unwrap();
+//! assert!(g.forward_causal_cone(&"flight").contains("landing"));
+//!
+//! // Disallowed transitions (`Thing +L Event`) are rejected structurally.
+//! assert!(g.add_edge("butterfly", LinkKind::LeadsTo, "flight").is_err());
+//! ```
 
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::vec::Vec;
 use core::fmt;
 
 /// The 3 node meta-types of Semantic Spacetime γ(3,4) (`arXiv:2506.07756v2` §3.2).
@@ -104,9 +123,18 @@ pub struct SstEdge<N> {
     pub dst: N,
 }
 
-/// Errors produced when inserting an edge into an [`SstGraph`].
+/// Errors produced when mutating an [`SstGraph`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SstError<N> {
+    /// Re-registering an existing node with an incompatible [`NodeKind`].
+    KindConflict {
+        /// Conflicting node identifier.
+        node: N,
+        /// Existing meta-type already registered.
+        existing: NodeKind,
+        /// Attempted conflicting meta-type.
+        attempted: NodeKind,
+    },
     /// Either source or destination node has not been registered in the graph.
     UnknownNode(N),
     /// The transition `(src_kind, link, dst_kind)` violates the strict γ(3,4) rules.
@@ -127,6 +155,14 @@ pub enum SstError<N> {
 impl<N: fmt::Debug> fmt::Display for SstError<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::KindConflict {
+                node,
+                existing,
+                attempted,
+            } => write!(
+                f,
+                "node {node:?} already registered as {existing:?}, cannot retype as {attempted:?}"
+            ),
             Self::UnknownNode(n) => write!(f, "unknown SST node: {n:?}"),
             Self::DisallowedTransition {
                 src,
@@ -141,6 +177,8 @@ impl<N: fmt::Debug> fmt::Display for SstError<N> {
         }
     }
 }
+
+impl<N: fmt::Debug> core::error::Error for SstError<N> {}
 
 /// Error produced when quotient coarse-graining merges nodes of incompatible [`NodeKind`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,10 +203,13 @@ impl<N: fmt::Debug, M: fmt::Debug> fmt::Display for CoarseGrainError<N, M> {
     }
 }
 
+impl<N: fmt::Debug, M: fmt::Debug> core::error::Error for CoarseGrainError<N, M> {}
+
 /// A well-formed typed Semantic Spacetime γ(3,4) graph.
 ///
-/// Every edge inserted via [`SstGraph::add_edge`] is checked against [`LinkKind::allowed`],
-/// maintaining well-formedness as a structural invariant.
+/// Both [`SstGraph::add_node`] (rejecting conflicting re-typing) and
+/// [`SstGraph::add_edge`] (enforcing [`LinkKind::allowed`]) maintain γ(3,4)
+/// well-formedness as an unbreakable structural invariant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SstGraph<N> {
     nodes: BTreeMap<N, NodeKind>,
@@ -191,9 +232,23 @@ impl<N: Ord + Clone> SstGraph<N> {
         }
     }
 
-    /// Registers a node with its γ(3,4) meta-type.
-    pub fn add_node(&mut self, id: N, kind: NodeKind) {
+    /// Registers a node with its γ(3,4) meta-type (idempotent if the kind matches).
+    ///
+    /// # Errors
+    /// Returns [`SstError::KindConflict`] if `id` is already registered with a different [`NodeKind`].
+    pub fn add_node(&mut self, id: N, kind: NodeKind) -> Result<(), SstError<N>> {
+        if let Some(&existing) = self.nodes.get(&id) {
+            if existing != kind {
+                return Err(SstError::KindConflict {
+                    node: id,
+                    existing,
+                    attempted: kind,
+                });
+            }
+            return Ok(());
+        }
         self.nodes.insert(id, kind);
+        Ok(())
     }
 
     /// Returns the map of registered nodes and their meta-types.
@@ -202,7 +257,7 @@ impl<N: Ord + Clone> SstGraph<N> {
         &self.nodes
     }
 
-    /// Returns the set of well-formed edges.
+    /// Returns the set of raw stored well-formed edges.
     #[must_use]
     pub const fn edges(&self) -> &BTreeSet<SstEdge<N>> {
         &self.edges
@@ -240,50 +295,60 @@ impl<N: Ord + Clone> SstGraph<N> {
         Ok(())
     }
 
-    /// Sparse adjacency iterator for a single link axis (`arXiv:2506.07756v2` §5.2).
-    pub fn axis_edges(&self, axis: LinkKind) -> impl Iterator<Item = (&N, &N)> {
-        self.edges
-            .iter()
-            .filter(move |e| e.kind == axis)
-            .map(|e| (&e.src, &e.dst))
+    /// Deduplicated directed adjacency pairs along `axis`, automatically normalizing
+    /// dual inverse links (`u --r⁻¹--> v` contributes `(v, u)` to `r`, and `Near` is
+    /// symmetric) (`arXiv:2506.07756v2` §§3.1 & 5.2).
+    #[must_use]
+    pub fn axis_edges(&self, axis: LinkKind) -> BTreeSet<(&N, &N)> {
+        let inv = axis.inv();
+        let mut out = BTreeSet::new();
+        for e in &self.edges {
+            if e.kind == axis {
+                out.insert((&e.src, &e.dst));
+            }
+            if e.kind == inv {
+                out.insert((&e.dst, &e.src));
+            }
+        }
+        out
     }
 
-    /// Forward causal light cone `J⁺(origin)` along [`LinkKind::LeadsTo`] edges.
+    /// Forward causal light cone `J⁺(origin)` along [`LinkKind::LeadsTo`] (and dual [`LinkKind::Follows`]).
     #[must_use]
     pub fn forward_causal_cone(&self, origin: &N) -> BTreeSet<N> {
         self.reachable_along(origin, LinkKind::LeadsTo, false)
     }
 
-    /// Reverse causal light cone `J⁻(target)` along [`LinkKind::LeadsTo`] edges backwards.
+    /// Reverse causal light cone `J⁻(target)` along [`LinkKind::LeadsTo`] backwards (and dual [`LinkKind::Follows`]).
     #[must_use]
     pub fn reverse_causal_cone(&self, target: &N) -> BTreeSet<N> {
         self.reachable_along(target, LinkKind::LeadsTo, true)
     }
 
-    /// Computes reachability from `start` along a chosen link `axis` (forward or reverse).
+    /// Computes reflexive reachability from `start` along `axis` in `O(V + E)` time,
+    /// honoring dual inverse links.
     #[must_use]
     pub fn reachable_along(&self, start: &N, axis: LinkKind, reverse: bool) -> BTreeSet<N> {
+        let mut adj: BTreeMap<&N, Vec<&N>> = BTreeMap::new();
+        for (u, v) in self.axis_edges(axis) {
+            if reverse {
+                adj.entry(v).or_default().push(u);
+            } else {
+                adj.entry(u).or_default().push(v);
+            }
+        }
+
         let mut visited = BTreeSet::new();
         let mut queue = VecDeque::new();
         visited.insert(start.clone());
         queue.push_back(start.clone());
 
         while let Some(cur) = queue.pop_front() {
-            for e in &self.edges {
-                if e.kind != axis {
-                    continue;
-                }
-                let next = if reverse {
-                    if e.dst == cur { Some(&e.src) } else { None }
-                } else if e.src == cur {
-                    Some(&e.dst)
-                } else {
-                    None
-                };
-                if let Some(n) = next
-                    && visited.insert(n.clone())
-                {
-                    queue.push_back(n.clone());
+            if let Some(neighbors) = adj.get(&cur) {
+                for &next in neighbors {
+                    if visited.insert(next.clone()) {
+                        queue.push_back(next.clone());
+                    }
                 }
             }
         }
@@ -293,12 +358,11 @@ impl<N: Ord + Clone> SstGraph<N> {
     /// Source nodes on a directed axis (in-degree `0`, `arXiv:2506.07756v2` §4.2 & §5.3).
     #[must_use]
     pub fn sources(&self, axis: LinkKind) -> BTreeSet<N> {
-        let mut has_in = BTreeSet::new();
-        for e in &self.edges {
-            if e.kind == axis {
-                has_in.insert(&e.dst);
-            }
-        }
+        let has_in: BTreeSet<&N> = self
+            .axis_edges(axis)
+            .into_iter()
+            .map(|(_, dst)| dst)
+            .collect();
         self.nodes
             .keys()
             .filter(|n| !has_in.contains(n))
@@ -309,12 +373,11 @@ impl<N: Ord + Clone> SstGraph<N> {
     /// Absorbing sink nodes on a directed axis (out-degree `0`, `arXiv:2506.07756v2` §4.2 & §5.3).
     #[must_use]
     pub fn sinks(&self, axis: LinkKind) -> BTreeSet<N> {
-        let mut has_out = BTreeSet::new();
-        for e in &self.edges {
-            if e.kind == axis {
-                has_out.insert(&e.src);
-            }
-        }
+        let has_out: BTreeSet<&N> = self
+            .axis_edges(axis)
+            .into_iter()
+            .map(|(src, _)| src)
+            .collect();
         self.nodes
             .keys()
             .filter(|n| !has_out.contains(n))
@@ -326,11 +389,9 @@ impl<N: Ord + Clone> SstGraph<N> {
     #[must_use]
     pub fn appointed_hubs(&self, axis: LinkKind) -> BTreeSet<N> {
         let mut in_deg: BTreeMap<&N, usize> = BTreeMap::new();
-        for e in &self.edges {
-            if e.kind == axis {
-                let entry = in_deg.entry(&e.dst).or_insert(0);
-                *entry = entry.saturating_add(1);
-            }
+        for (_, dst) in self.axis_edges(axis) {
+            let entry = in_deg.entry(dst).or_insert(0);
+            *entry = entry.saturating_add(1);
         }
         in_deg
             .into_iter()
@@ -343,11 +404,9 @@ impl<N: Ord + Clone> SstGraph<N> {
     #[must_use]
     pub fn branching_points(&self, axis: LinkKind) -> BTreeSet<N> {
         let mut out_deg: BTreeMap<&N, usize> = BTreeMap::new();
-        for e in &self.edges {
-            if e.kind == axis {
-                let entry = out_deg.entry(&e.src).or_insert(0);
-                *entry = entry.saturating_add(1);
-            }
+        for (src, _) in self.axis_edges(axis) {
+            let entry = out_deg.entry(src).or_insert(0);
+            *entry = entry.saturating_add(1);
         }
         out_deg
             .into_iter()
@@ -359,7 +418,7 @@ impl<N: Ord + Clone> SstGraph<N> {
     /// Quotient coarse-graining functor `G` (`arXiv:1505.01716v1` §3.5,
     /// `arXiv:2506.07756v2` §4.4, verified by Lean 4 `coarseGrain_wellFormed`).
     ///
-    /// Maps every node `n` to supernode `partition(n)`, removes interior self-loops
+    /// Maps every node `n` to supernode `partition(n)`, drops interior self-loops
     /// (`partition(src) == partition(dst)`), and preserves all exterior edges.
     ///
     /// # Errors

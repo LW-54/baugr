@@ -158,7 +158,7 @@ fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
         for c in 1..num_agents {
             if rng.coin(1, 2) {
                 let p = rng.range(c);
-                sys.contain(p, c);
+                let _ = sys.contain(p, c);
             }
         }
         let num_promises = 4_usize.saturating_add(rng.range(8)); // 4..=11 promises

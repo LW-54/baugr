@@ -13,30 +13,44 @@ Derived directly from the primary mathematical papers of Jan Bergstra and Mark B
 
 ## Architecture (4 Modules)
 
-| Module | Mathematical Primitives |
-| :--- | :--- |
-| [`src/promise.rs`](src/promise.rs) | `Body<O, U>` (`Offer` / `Use`), `BodyAlgebra` ($b_1 \cap b_2$), `AgentSet`, `Cond` (`SelfPromise`, `Assisted`, `Accepted`, `Interior`, monotone `AtLeast`, stratified `Not`), `PromiseSystem`, Kosaraju SCC stratification, observer-local `resolve`, complete-information check |
-| [`src/spacetime.rs`](src/spacetime.rs) | Strict $\gamma(3,4)$ `NodeKind` (`Event`, `Thing`, `Concept`), `LinkKind` (`0, ±1, ±2, ±3`), `SstGraph`, forward/reverse causal light cones, sources/sinks/appointed hubs, quotient `coarse_grain` $\mathbf{G}$ |
-| [`src/projection.rs`](src/projection.rs) | Canonical well-formed functor $\Phi : \text{PromiseSystem} \to \gamma(3,4)$ (`Agent ↦ Thing`, `Promise ↦ Event`, `Intent ↦ Concept`) and `CoarseGrainingDirectory` $\pi_{\text{directory}}$ |
-| [`src/law.rs`](src/law.rs) | Ordered Commutative Monoid `ResourceMonoid` (`u32`..`usize`, `MaxOne`, `Unbounded`, Cartesian products), `ResolutionView`, open composable `ScopeLaw`, standard laws (`ValencyLaw`, `QuorumLaw`, `UniqueProviderLaw`, `DisjointInScope`, `AgreementInScope`) |
+| Module | Rust | Lean 4 | Mathematical Primitives |
+| :--- | :--- | :--- | :--- |
+| **Promise Algebra** | [`src/promise/`](src/promise/mod.rs) | [`Baugr/Promise.lean`](lean/Baugr/Promise.lean) | `Body<O, U>` (`Offer`/`Use`), `BodyAlgebra` ($b_1 \cap b_2$), `AgentSet`, `Cond` (`SelfPromise`, `Assisted`, `Accepted`, `Interior`, monotone `AtLeast`, native `!` stratified negation), acyclic opaque/transparent `Hierarchy`, Kosaraju SCC stratification, observer-local `resolve`, complete-information check |
+| **Semantic Spacetime** | [`src/spacetime.rs`](src/spacetime.rs) | [`Baugr/Spacetime.lean`](lean/Baugr/Spacetime.lean) | Strict $\gamma(3,4)$ `NodeKind` (`Event`, `Thing`, `Concept`), `LinkKind` (`0, ±1, ±2, ±3`), invariant-enforcing `SstGraph`, dual-link normalized $O(V+E)$ causal light cones, sources/sinks/hubs, quotient `coarse_grain` $\mathbf{G}$ |
+| **Projection & Directories** | [`src/projection.rs`](src/projection.rs) | [`Baugr/Projection.lean`](lean/Baugr/Projection.lean) | Canonical well-formed functor $\Phi : \text{PromiseSystem} \to \gamma(3,4)$ (`Agent ↦ Thing`, `Promise ↦ Event`, `Intent ↦ Concept`) and `CoarseGrainingDirectory` $\pi_{\text{directory}}$ |
+| **Valency & Open Laws** | [`src/law/`](src/law/mod.rs) | [`Baugr/Law.lean`](lean/Baugr/Law.lean) | Ordered Commutative Monoid `ResourceMonoid` (`u32`..`usize`, `MaxOne`, `Unbounded`, Cartesian products), `ResolutionView`, open composable `ScopeLaw`, standard laws (`ValencyLaw`, `QuorumLaw`, `UniqueProviderLaw`, `DisjointBy`, `AgreementBy`) |
 
-## Formal Verification (`lean/Baugr/` — Cedar VGD)
+## Formal Verification (`lean/Baugr/Thm/` — Cedar VGD)
 
-- **Zero `Mathlib`, `0` warnings, `0 sorryAx`** across **20 audited theorems** in [`lean/Baugr/Theorems.lean`](lean/Baugr/Theorems.lean):
-  - Knaster-Tarski least fixed point & cycle rejection (`quenchIter_le_any_prefixed`, `cyclic_conditional_never_quenches`)
-  - Stratified negation equivalence on positive systems (`stratified_agrees_with_positive`)
-  - Promise Theory Axiom of Autonomy (`autonomy_unaccepted_offer_inert`)
-  - Exact $\gamma(3,4)$ involution, antisymmetry, transitive closure, Couch/Burgess inference closure, quotient `coarseGrain_wellFormed`, and canonical `projectSst_wellFormed`
-  - **Crown-Jewel Unification Theorem**: `perturbation_in_reverse_cone` — observer-local assessment perturbations are strictly bounded by the $\gamma(3,4)$ reverse causal light cone $J^-_\Phi(\pi)$
-  - Opaque superagent non-piercing encapsulation (`opaque_non_piercing`, `opaque_non_piercing_inward`, `opaque_interior_perturbation_contained`)
-  - Generalized monoidal valency withdrawal safety (`valency_withdrawal_safe`) & composable `ScopeLaw` conjunction (`allLaws_cons`)
+**Zero `Mathlib`, `0` warnings, `0 sorryAx`** across **26 audited theorems** ([`Baugr/Audit.lean`](lean/Baugr/Audit.lean)):
+
+| Family | Proof Module | Audited Theorems | Guarantee |
+| :---: | :--- | :--- | :--- |
+| **T1–T2** | [`Thm/Quenching.lean`](lean/Baugr/Thm/Quenching.lean) | `evalCond_mono`, `evalCond_mono_pol`, `quenchStep_mono`, `quenchIter_le_any_prefixed`, `quenchIter_chain`, `cyclic_conditional_never_quenches`, `stratified_agrees_with_positive` | Knaster-Tarski least fixed point, polarity-indexed monotonicity under arbitrary nested `Not`, circular cycle rejection |
+| **T3** | [`Thm/Stratification.lean`](lean/Baugr/Thm/Stratification.lean) | `stratumStep_mono`, `stratumIter_fixed_point`, `evalStratified_fixed_point`, **`stratification_independent`** | Finite convergence ($\le |P|+1$ steps) to a global fixed point & **Apt–Blair–Walker Stratification Independence** |
+| **T4** | [`Thm/Autonomy.lean`](lean/Baugr/Thm/Autonomy.lean) | `autonomy_unaccepted_offer_inert` | **Axiom of Autonomy**: unaccepted offers/impositions cannot alter any existing condition |
+| **T5** | [`Thm/Spacetime.lean`](lean/Baugr/Thm/Spacetime.lean) | `LinkKind.inv_inv`, `allowed_antisym`, `allowed_pos_trans`, `inference_contains_expresses`, `inference_near_expresses`, `coarseGrain_wellFormed` | Exact $\gamma(3,4)$ involution, antisymmetry, transitivity, Couch/Burgess inference closure, quotient coarse-graining |
+| **T5d–T6** | [`Thm/LightCone.lean`](lean/Baugr/Thm/LightCone.lean) | `projectSst_wellFormed`, **`perturbation_in_reverse_cone`** | Canonical $\Phi$ well-formedness & **Crown-Jewel SST Reverse Light Cone Perturbation Containment** |
+| **T7** | [`Thm/Superagent.lean`](lean/Baugr/Thm/Superagent.lean) | `noOpaqueWall_symm`, `opaque_non_piercing`, `opaque_non_piercing_inward`, `opaque_interior_perturbation_contained` | Opaque superagent non-piercing encapsulation (outward & inward) & interior isolation |
+| **T8** | [`Thm/Law.lean`](lean/Baugr/Thm/Law.lean) | `valency_withdrawal_safe`, `allLaws_cons` | Monoidal valency withdrawal safety & composable `ScopeLaw` conjunction |
+
 - **Mechanical Rust ↔ Lean Lock**: [`tests/drt.rs`](tests/drt.rs) runs **500 randomized Promise Systems** against the compiled Lean 4 `baugr-oracle` verifying `0` divergences across quenched promises, active bindings (+ exact overlap $b_1 \cap b_2$), and $\gamma(3,4)$ edges.
+
+## Documentation, Paper & Examples
+
+- **Formal Technical Paper**: [`paper/baugr.typ`](paper/baugr.typ) — compiles hermetically offline via `nix build .#paper` (or `just paper`) to a publication-grade PDF documenting the complete mathematical derivation, proof architecture, and Cedar VGD bridge.
+- **API Reference & Executable Doctests**: `cargo doc --no-deps --open` and `cargo test --doc`.
+- **Standalone Runnable Examples**:
+  - `cargo run --example microgrid` — stratified failover, split blackout, and wattage valency
+  - `cargo run --example raft` — opaque superagent 2-of-3 quorum emergence & reverse light cone
+  - `cargo run --example tenancy` — Burgess tenancy, simultaneous per-host `DisjointBy`, and `AgreementBy` $C(b)$
 
 ## Running Checks
 
 ```bash
-just test   # cargo fmt, clippy::pedantic, rustdoc, unit + 3-domain + 500 randomized property tests
-just lean   # Lean 4 build + 0-sorryAx axiom audit
+just test   # cargo fmt, clippy::pedantic, rustdoc, unit + domain + 500 property tests + doctests
+just lean   # Lean 4 build + 0-sorryAx audit across all 26 theorems
 just drt    # 500-case Rust ↔ Lean 4 differential randomized testing
-just check  # Full hermetic `nix flake check -L` (6 checks)
+just paper  # Compile paper/baugr.typ -> paper/baugr.pdf
+just check  # Full hermetic `nix flake check -L` (7 checks)
 ```

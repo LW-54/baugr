@@ -1,5 +1,6 @@
 /target/
 /lean/.lake/
+/paper/*.pdf
 /result
 /result-*
 *.log
