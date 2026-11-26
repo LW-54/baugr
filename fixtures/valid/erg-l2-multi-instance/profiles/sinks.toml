@@ -1,0 +1,3 @@
+id = "sinks"
+description = "Transparent profile providing event collectors"
+agents = ["collector-a", "collector-b"]

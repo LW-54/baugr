@@ -1,0 +1,11 @@
+id = "scada-monitor"
+description = "SCADA collector aggregating all telemetry feeds and actuation claims"
+
+[offer."grid:summary"]
+region = "north"
+
+[use."grid:telemetry".all-feeds]
+selector = "*"
+
+[use."operator:claim".audit-claims]
+selector = "*"

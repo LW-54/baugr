@@ -1,0 +1,6 @@
+id = "auditor"
+description = "Read-only external auditor (forbidden from claiming breaker actuation)"
+attributes = ["auth:principal", "role:auditor"]
+
+[use]
+"grid:summary" = true

@@ -1,0 +1,13 @@
+[[auth_bindings]]
+id = "ab-key"
+ptype = "key:claim"
+polarity = "offer"
+action = "use-key"
+principalFilter = { kind = "atom", tag = "auth:principal" }
+
+[[policies]]
+id = "forbid-bot"
+effect = "forbid"
+action = "use-key"
+principalPred = { kind = "atom", tag = "role:bot" }
+resourcePred = { kind = "atom", tag = "cls:secret" }

@@ -1,0 +1,3 @@
+id = "claimer"
+[offer."key:claim".master]
+tags = ["cls:secret"]

@@ -1,0 +1,9 @@
+id = "root"
+profiles = ["sinks"]
+contains = [
+  { agent = "worker", instance = "w1", offer = { "cfg:slot" = { label = "alpha" } } },
+  { agent = "worker", instance = "w2", offer = { "cfg:slot" = { label = "beta" } } },
+]
+
+[internal.offer]
+"quota:units" = 25

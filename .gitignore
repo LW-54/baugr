@@ -1,0 +1,5 @@
+/target/
+/lean/.lake/
+/result
+/result-*
+*.log

@@ -1,0 +1,4 @@
+[[invariants]]
+id = "inv-no-conflict-tags"
+ptype = "route:item"
+forbidTags = { kind = "inter", left = { kind = "atom", tag = "pub" }, right = { kind = "atom", tag = "priv" } }

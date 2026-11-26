@@ -1,0 +1,4 @@
+[promises."key:claim"]
+cardinality = "broadcast"
+keyed = true
+default_offer_mandatory = false

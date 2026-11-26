@@ -1,0 +1,11 @@
+id = "provider"
+description = "Pure Layer-0 raw promise provider (zero schemas)"
+
+[[promises]]
+ptype = "cfg:endpoint"
+key = "cfg:endpoint"
+polarity = "offer"
+cardinality = "exclusive"
+mandatory = true
+[promises.payload]
+uri = "https://example.invalid/api"

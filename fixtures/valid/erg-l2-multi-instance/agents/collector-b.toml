@@ -1,0 +1,4 @@
+id = "collector-b"
+
+[use."event:stream".sync-only]
+selector = "sync"

@@ -1,0 +1,3 @@
+[promises."evt:log"]
+cardinality = "broadcast"
+keyed = true

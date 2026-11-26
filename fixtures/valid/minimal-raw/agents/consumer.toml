@@ -1,0 +1,9 @@
+id = "consumer"
+description = "Pure Layer-0 raw promise consumer"
+
+[[promises]]
+ptype = "cfg:endpoint"
+key = "cfg:endpoint"
+polarity = "use"
+cardinality = "exclusive"
+mandatory = true

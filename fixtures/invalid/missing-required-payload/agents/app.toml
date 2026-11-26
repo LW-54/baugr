@@ -1,0 +1,3 @@
+id = "app"
+[offer."svc:http"]
+host = "localhost"

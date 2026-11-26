@@ -1,0 +1,3 @@
+id = "metering"
+description = "Transparent profile bundling SCADA telemetry & audit collection"
+agents = ["scada-monitor"]

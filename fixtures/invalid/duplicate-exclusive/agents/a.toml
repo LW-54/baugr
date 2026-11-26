@@ -1,0 +1,3 @@
+id = "a"
+[offer."svc:port"]
+port = 80

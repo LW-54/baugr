@@ -1,0 +1,5 @@
+id = "breaker-auxiliary"
+description = "Protection breaker governing auxiliary-zone feeders"
+
+[use."breaker:zone".auxiliary]
+selector = "zone:auxiliary"

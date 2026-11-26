@@ -1,0 +1,10 @@
+id = "worker"
+description = "Reusable worker instantiated twice with distinct local config"
+
+[offer."event:stream".item]
+tags = ["keep", "sync"]
+channel = "events"
+
+[use]
+"cfg:slot" = true
+"quota:units" = { amount = 10, priority = 0 }
