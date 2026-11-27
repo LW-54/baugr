@@ -22,7 +22,7 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::promise::{BodyAlgebra, PromiseSystem};
+use crate::promise::{BodyAlgebra, DeriveAlgebra, PromiseSystem};
 use crate::spacetime::{LinkKind, NodeKind, SstGraph};
 
 /// Typed node in the canonical γ(3,4) projection of a [`PromiseSystem`]:
@@ -72,7 +72,7 @@ pub fn project_sst<A, P, D, R>(sys: &PromiseSystem<A, P, D, R>) -> SstGraph<SstN
 where
     A: Ord + Clone,
     P: Ord + Clone,
-    D: BodyAlgebra,
+    D: DeriveAlgebra<A, P, R>,
 {
     let compat = sys.build_compat_index();
     let mut graph = SstGraph::new();
@@ -111,7 +111,7 @@ where
         );
 
         let mut deps = Vec::new();
-        compat.promise_deps(&pr.cond, pr.obs(), &mut deps);
+        sys.collect_promise_deps(&compat, pr, &mut deps);
         for (dep, _) in deps {
             if sys.promises().contains_key(&dep) {
                 let _ = graph.add_edge(

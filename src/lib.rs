@@ -29,22 +29,23 @@
 //! ```
 //!
 //! ## Modules
-//! - [`promise`]: Autonomous agents, 2-polarity offers/acceptances (`+b`/`-b`),
-//!   mutual-information overlap (`b₁ ∩ b₂`), boolean and value-dependent conditional
-//!   quenching (`+f(obs) | C`) with stratified negation and observation barriers,
-//!   observer-local assessments `α(a, π)`, and acyclic opaque/transparent superagents.
+//! - [`promise`]: Autonomous agents, unified polarity & static/derived specifications
+//!   (`Body<Spec<P, O, R>, Spec<P, U, R>>`), mutual-information overlap (`b₁ ∩ b₂`),
+//!   boolean and value-dependent conditional quenching (`+f(obs) | C`) over canonical
+//!   deduplicated observations, observer-local assessments `α(a, π)`, and recursively
+//!   sealed opaque/transparent superagents.
 //! - [`spacetime`]: Strict typed Semantic Spacetime γ(3,4) with 3 node
 //!   meta-types (`Event`, `Thing`, `Concept`), 4 signed link meta-types
 //!   (`Near`, `±LeadsTo`, `±Contains`, `±Expresses`), dual-link normalized
-//!   causal light cones, sources/sinks/appointed hubs, and quotient
+//!   causal light cones, kind-filtered sources/sinks/appointed hubs, and quotient
 //!   coarse-graining `G`.
 //! - [`projection`]: Canonical well-formed functor `Φ : PromiseSystem -> γ(3,4)`
-//!   and superagent coarse-graining directories.
-//! - [`law`]: Generalized ordered-commutative-monoid Promise Valency (`+b#n`),
-//!   grouped cross-offer budgets (`BudgetBy`), universal static upper-bound
-//!   discharge (`static_upper_bound`), and open composable [`law::ScopeLaw`]
-//!   verification (`ValencyLaw`, `BudgetBy`, `QuorumLaw`, `UniqueProviderLaw`,
-//!   `DisjointBy`, `AgreementBy`).
+//!   (with event-horizon vertex-cut separation across opaque walls) and superagent
+//!   coarse-graining directories.
+//! - [`law`]: Ordered-commutative-monoid Promise Valency with top-completion [`Cap`] (`R⊤`),
+//!   four orthogonal composable [`law::ScopeLaw`]s (`BudgetBy`, `DisjointBy`, `AgreementBy`,
+//!   `CardinalityBy`), and compile-time-checked [`StaticUpperBound`] universal discharge
+//!   via [`DownwardClosedLaw`].
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -57,14 +58,14 @@ pub mod promise;
 pub mod spacetime;
 
 pub use law::{
-    AgreementBy, AgreementConflict, BudgetBy, BudgetDeficit, DisjointBy, DisjointViolation, MaxOne,
-    ProviderCardinalityError, QuorumLaw, QuorumShortfall, ResolutionView, ResourceMonoid, ScopeLaw,
-    Unbounded, UniqueProviderLaw, ValencyDeficit, ValencyLaw,
+    AgreementBy, AgreementConflict, BudgetBy, BudgetDeficit, Cap, CardinalityBy,
+    CardinalityViolation, DisjointBy, DisjointViolation, DownwardClosedLaw, ResolutionView,
+    ResourceMonoid, ScopeLaw, StaticUpperBound,
 };
 pub use projection::{CoarseGrainingDirectory, SstNode, directory_of, project_sst};
 pub use promise::{
-    AgentSet, AlgebraBody, AlgebraPromise, Binding, Body, BodyAlgebra, BodySpec, Cond,
-    ConditionWarning, DeriveAlgebra, EvalError, HierarchyError, IncompleteInfoWarning, LocalView,
-    Obs, ObservedOffer, ObservedUse, Promise, PromiseMap, PromiseSystem, Resolved, SymmetricMeet,
+    AgentSet, AlgebraBody, AlgebraPromise, Binding, Body, BodyAlgebra, Cond, ConditionWarning,
+    DeriveAlgebra, EvalError, HierarchyError, IncompleteInfoWarning, LocalView, Obs, ObservedOffer,
+    ObservedUse, Promise, PromiseMap, PromiseSystem, Resolved, Spec, SpecRef, SymmetricMeet,
 };
 pub use spacetime::{CoarseGrainError, LinkKind, NodeKind, SstEdge, SstError, SstGraph};

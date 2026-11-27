@@ -3,9 +3,11 @@
 //!
 //! - Always runs 500 randomized property checks covering BOTH static promises AND
 //!   value-derived conditional promises (`+f(obs) | C` / `-f(obs) | C` with all 4
-//!   `Obs` kinds, nested `Not`, opaque superagents, and observer-local broken `α`):
-//!   reverse light-cone containment over *resolved body values*, opaque non-piercing,
-//!   and strict γ(3,4) well-formedness.
+//!   `Obs` kinds, randomized `may_overlap` channel masks, nested `Not`, nested
+//!   opaque superagents, and observer-local broken `α`):
+//!   strict γ(3,4) well-formedness, opaque non-piercing, **no direct causal crossing**
+//!   across opaque walls (Strong Law II), and reverse light-cone containment over
+//!   *resolved body values*.
 //! - When `BAUGR_ORACLE` points to the compiled Lean 4 `baugr-oracle` executable (wired
 //!   automatically by `nix flake check` and `just drt`), also verifies bit-for-bit
 //!   equivalence of resolved bodies, bindings + overlaps, and SST edges across all
@@ -17,8 +19,8 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use baugr::{
-    AgentSet, Body, BodyAlgebra, BodySpec, Cond, DeriveAlgebra, LinkKind, LocalView, NodeKind, Obs,
-    Promise, PromiseSystem, Resolved, SstNode, project_sst,
+    AgentSet, Body, BodyAlgebra, Cond, DeriveAlgebra, LinkKind, LocalView, NodeKind, Obs, Promise,
+    PromiseSystem, Resolved, Spec, SpecRef, SstNode, project_sst,
 };
 
 /// Deterministic xorshift64* PRNG (zero external crate dependencies).
@@ -53,13 +55,14 @@ impl Rng {
 }
 
 /// Exact bitmask mutual-information `BodyAlgebra` + `DeriveAlgebra` matching
-/// `Baugr.Oracle.Main.bitmaskAlgebra` and `Baugr.Oracle.Main.deriveBitmask`.
+/// `Baugr.Oracle.Main.bitmaskAlgebra`, `ruleCompat`, and `deriveBitmask`.
 #[derive(Clone, Copy, Debug)]
 struct BitmaskAlgebra;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BitmaskRule {
     seed: usize,
+    chan_mask: usize,
 }
 
 impl BodyAlgebra for BitmaskAlgebra {
@@ -98,6 +101,22 @@ fn eval_bitmask_rule(
 }
 
 impl DeriveAlgebra<usize, usize, BitmaskRule> for BitmaskAlgebra {
+    fn may_overlap(
+        &self,
+        offer: SpecRef<'_, usize, BitmaskRule>,
+        use_: SpecRef<'_, usize, BitmaskRule>,
+    ) -> bool {
+        let om = match offer {
+            SpecRef::Fixed(v) => *v,
+            SpecRef::Derived(r) => r.chan_mask,
+        };
+        let um = match use_ {
+            SpecRef::Fixed(v) => *v,
+            SpecRef::Derived(r) => r.chan_mask,
+        };
+        (om & um) != 0
+    }
+
     fn derive_offer(
         &self,
         rule: &BitmaskRule,
@@ -206,7 +225,7 @@ fn gen_obs_list(
     if max_dep_id == 0 {
         return Vec::new();
     }
-    let count = 1_usize.saturating_add(rng.range(3)); // 1..=3 observations
+    let count = 1_usize.saturating_add(rng.range(3)); // 1..=3 observations (may include duplicates!)
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         match rng.range(4) {
@@ -241,7 +260,7 @@ fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
             let opaque = rng.coin(1, 3);
             sys.add_superagent(a, opaque);
         }
-        // Acyclic parent hierarchy: child `c` may have parent `p < c`.
+        // Acyclic multi-level parent hierarchy: child `c` may have parent `p < c`.
         for c in 1..num_agents {
             if rng.coin(1, 2) {
                 let p = rng.range(c);
@@ -258,7 +277,10 @@ fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
             let is_derived = pid > 0 && rng.coin(1, 3);
             let pr = if is_derived {
                 let obs = gen_obs_list(rng, promiser, pid, &sys);
-                let rule = BitmaskRule { seed: rng.range(8) };
+                let rule = BitmaskRule {
+                    seed: rng.range(8),
+                    chan_mask: 1_usize.saturating_add(rng.range(7)),
+                };
                 if is_offer {
                     Promise::derive_offer(pid, promiser, target, obs, rule).with_scope(scope)
                 } else {
@@ -274,7 +296,7 @@ fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
             };
             sys.add_promise(pr);
         }
-        // Pass 2: attach rich conditions (including positive cycles & nested negations!).
+        // Pass 2: attach rich conditions (including positive cycles, nested opaque refs & nested negations!).
         let mut updated = Vec::with_capacity(num_promises);
         for pid in 0..num_promises {
             if let Some(mut pr) = sys.promises().get(&pid).cloned() {
@@ -346,7 +368,7 @@ fn fmt_cond(c: &Cond<usize>) -> String {
     }
 }
 
-fn fmt_obs(obs: &[Obs<usize>]) -> String {
+fn fmt_obs(obs: &BTreeSet<Obs<usize>>) -> String {
     obs.iter()
         .map(|o| match o {
             Obs::SelfPromise(q) => format!("S {q}"),
@@ -368,36 +390,44 @@ fn serialize_case(case: &GeneratedCase, strata: &BTreeMap<usize, usize>) -> Stri
         let _ = writeln!(out, "OPAQUE {op}");
     }
     for pr in case.sys.promises().values() {
-        match &pr.spec {
-            BodySpec::Fixed(body) => {
-                let (pol, body_val) = match *body {
-                    Body::Offer(v) => ("O", v),
-                    Body::Use(v) => ("U", v),
-                };
+        match &pr.body {
+            Body::Offer(Spec::Fixed(v)) => {
                 let _ = writeln!(
                     out,
-                    "PROMISE {} {} {} {} {} {} {}",
+                    "PROMISE {} {} O {} {} {} {}",
                     pr.id,
                     pr.promiser,
-                    pol,
                     fmt_agent_set(&pr.target),
                     fmt_agent_set(&pr.scope),
-                    body_val,
+                    v,
                     fmt_cond(&pr.cond)
                 );
             }
-            BodySpec::DerivedOffer { obs, rule } | BodySpec::DerivedUse { obs, rule } => {
+            Body::Use(Spec::Fixed(v)) => {
+                let _ = writeln!(
+                    out,
+                    "PROMISE {} {} U {} {} {} {}",
+                    pr.id,
+                    pr.promiser,
+                    fmt_agent_set(&pr.target),
+                    fmt_agent_set(&pr.scope),
+                    v,
+                    fmt_cond(&pr.cond)
+                );
+            }
+            Body::Offer(Spec::Derived { obs, rule }) | Body::Use(Spec::Derived { obs, rule }) => {
                 let pol = if pr.is_offer() { "O" } else { "U" };
                 let obs_str = fmt_obs(obs);
                 let _ = writeln!(
                     out,
-                    "DERIVED {} {} {} {} {} {} {} {} {}",
+                    "DERIVED {} {} {} {} {} {} {} {} {} {}",
                     pr.id,
                     pr.promiser,
                     pol,
                     fmt_agent_set(&pr.target),
                     fmt_agent_set(&pr.scope),
                     rule.seed,
+                    rule.chan_mask,
                     obs.len(),
                     obs_str,
                     fmt_cond(&pr.cond)
@@ -443,6 +473,23 @@ struct CheckedCase {
     sst: baugr::SstGraph<SstNode<usize, usize>>,
 }
 
+fn check_opaque_boundary(
+    sys: &PromiseSystem<usize, usize, BitmaskAlgebra, BitmaskRule>,
+    a: usize,
+    b: usize,
+) -> bool {
+    for s in sys.opaque_superagents() {
+        let a_strict = sys.is_strict_ancestor(s, &a);
+        let b_strict = sys.is_strict_ancestor(s, &b);
+        let a_in = a == *s || a_strict;
+        let b_in = b == *s || b_strict;
+        if (a_strict && !b_in) || (b_strict && !a_in) {
+            return false;
+        }
+    }
+    true
+}
+
 fn check_theorem_invariants(
     rng: &mut Rng,
     case: &GeneratedCase,
@@ -456,6 +503,16 @@ fn check_theorem_invariants(
         if !LinkKind::allowed(sk, edge.kind, dk) {
             return Err(format!("disallowed projected SST edge: {edge:?}"));
         }
+        // Property 2 (T7c Strong Law II): NO +LeadsTo edge ever crosses an opaque boundary!
+        if edge.kind == LinkKind::LeadsTo
+            && let (SstNode::Promise(d), SstNode::Promise(p)) = (&edge.src, &edge.dst)
+            && let (Some(pd), Some(pp)) = (case.sys.promises().get(d), case.sys.promises().get(p))
+            && !check_opaque_boundary(&case.sys, pd.promiser, pp.promiser)
+        {
+            return Err(format!(
+                "T7c violation: +LeadsTo edge {d}->{p} crossed an opaque wall!"
+            ));
+        }
     }
     if !sst
         .nodes()
@@ -465,20 +522,14 @@ fn check_theorem_invariants(
         return Err("unexpected node kind".to_string());
     }
 
-    // Property 2 (T7a): No active binding ever pierces an opaque superagent wall.
+    // Property 3 (T7a): No active binding ever pierces an opaque superagent wall.
     for b in &resolved.bindings {
-        for s in case.sys.opaque_superagents() {
-            let p_strict = case.sys.is_strict_ancestor(s, &b.promiser);
-            let c_strict = case.sys.is_strict_ancestor(s, &b.consumer);
-            let p_in = &b.promiser == s || p_strict;
-            let c_in = &b.consumer == s || c_strict;
-            if (p_strict && !c_in) || (c_strict && !p_in) {
-                return Err(format!("binding {b:?} pierced opaque superagent {s}"));
-            }
+        if !check_opaque_boundary(&case.sys, b.promiser, b.consumer) {
+            return Err(format!("binding {b:?} pierced an opaque wall"));
         }
     }
 
-    // Property 3 (T6 Crown Jewel over full value-carrying bodies!):
+    // Property 4 (T6 Crown Jewel over full value-carrying bodies!):
     // Flipping assessments OUTSIDE J⁻(target) never changes target's resolved `Option<Body>`!
     let target_pid = rng.range(case.sys.promises().len());
     let rev_cone = sst.reverse_causal_cone(&SstNode::Promise(target_pid));
@@ -494,7 +545,7 @@ fn check_theorem_invariants(
         .sys
         .resolve(|obs, pid| !flipped_broken.contains(&(*obs, *pid)))
         .map_err(|e| format!("perturbed resolve failed: {e}"))?;
-    if resolved.bodies.get(&target_pid) != resolved_perturbed.bodies.get(&target_pid) {
+    if resolved.body(&target_pid) != resolved_perturbed.body(&target_pid) {
         return Err(
             "T6 violation: perturbation outside reverse light cone altered target body!"
                 .to_string(),
@@ -604,7 +655,7 @@ fn verify_against_lean_oracle(
 
 #[test]
 fn randomized_theorem_properties_and_optional_lean_drt() {
-    let mut rng = Rng::new(0xBA09_0003_CAFE_BABE);
+    let mut rng = Rng::new(0xBA09_0004_CAFE_BABE);
     let num_cases = 500;
     let mut cases = Vec::with_capacity(num_cases);
     let mut oracle_input = String::new();

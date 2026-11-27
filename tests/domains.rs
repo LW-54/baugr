@@ -1,16 +1,16 @@
 //! Domain-agnostic integration tests, value-derived conditional promise proofs,
-//! static upper-bound discharge tests, invariant proofs, and purity guards for `baugr` v0.3.
+//! recursive opaque event-horizon tests, channel-sharp `may_overlap` tests,
+//! type-safe static upper-bound discharge tests, and L0 purity guards for `baugr` v0.4.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use baugr::{
-    AgentSet, AgreementConflict, Binding, Body, BodyAlgebra, BudgetDeficit, CoarseGrainError, Cond,
-    ConditionWarning, DeriveAlgebra, EvalError, HierarchyError, LinkKind, LocalView, MaxOne,
-    NodeKind, Obs, Promise, PromiseSystem, ProviderCardinalityError, QuorumLaw, QuorumShortfall,
-    ResolutionView, ResourceMonoid, SstError, SstGraph, SstNode, SymmetricMeet, Unbounded,
-    UniqueProviderLaw, ValencyLaw, directory_of, project_sst,
+    AgentSet, AgreementConflict, Body, BodyAlgebra, BudgetDeficit, Cap, CardinalityViolation,
+    CoarseGrainError, Cond, ConditionWarning, DeriveAlgebra, EvalError, HierarchyError, LinkKind,
+    LocalView, NodeKind, Obs, Promise, PromiseSystem, ResolutionView, ResourceMonoid, SpecRef,
+    SstError, SstGraph, SstNode, directory_of, project_sst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,13 +87,13 @@ fn build_microgrid() -> PromiseSystem<&'static str, &'static str, GridAlgebra> {
 fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
     let mut sys = build_microgrid();
 
-    // Static upper-bound discharge (Lean theorem `static_discharge_universal`):
-    // Even though `bat:backup` is OFF under optimistic α, `static_upper_bound()` includes
+    // Type-safe static upper-bound discharge (Lean theorem `static_discharge_universal`):
+    // Even though `bat:backup` is OFF under optimistic α, `StaticUpperBound` includes
     // its worst-case 1000W hospital load and proves 1000W <= 1500W for ALL runtime scenarios α!
     let upper = sys.static_upper_bound();
     assert!(
-        ResolutionView::new(&sys, &upper)
-            .check_valency("bat:backup", 1500_u32, |b| b.overlap)
+        upper
+            .discharge_valency("bat:backup", 1500_u32, |b| b.overlap)
             .is_ok()
     );
 
@@ -103,9 +103,7 @@ fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
     assert!(!r_normal.is_quenched("bat:backup"));
     assert!(
         ResolutionView::new(&sys, &r_normal)
-            .check(&UniqueProviderLaw {
-                use_id: "hosp:draw"
-            })
+            .check_unique_provider("hosp:draw")
             .is_ok()
     );
 
@@ -125,14 +123,13 @@ fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
             .iter()
             .any(|b| b.offer_id == "bat:backup" && b.consumer == "hospital" && b.overlap == 1000)
     );
-    let cap_law = ValencyLaw {
-        offer_id: "bat:backup",
-        capacity: 1500_u32,
-        weight: |b: &Binding<&str, &str, u32>| b.overlap,
-    };
-    assert!(ResolutionView::new(&sys, &r_outage).check(&cap_law).is_ok());
+    assert!(
+        ResolutionView::new(&sys, &r_outage)
+            .check_valency("bat:backup", 1500_u32, |b| b.overlap)
+            .is_ok()
+    );
 
-    // Add 800W factory load -> `static_upper_bound()` IMMEDIATELY catches the hidden blackout
+    // Add 800W factory load -> `StaticUpperBound` IMMEDIATELY catches the hidden blackout
     // overdraw (1800W > 1500W) even though optimistic α draws 0W from `bat:backup`!
     sys.add_promise(Promise::accept(
         "fact:draw",
@@ -143,17 +140,17 @@ fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
             watts: 800,
         },
     ));
-    let upper_over = sys.static_upper_bound();
-    let static_err = ResolutionView::new(&sys, &upper_over)
-        .check(&cap_law)
+    let static_err = sys
+        .static_upper_bound()
+        .discharge_valency("bat:backup", 1500_u32, |b| b.overlap)
         .expect_err("static upper bound catches blackout overdraw");
     assert_eq!(static_err.used, 1800);
     assert_eq!(static_err.capacity, 1500);
 
     let r_overload = sys.resolve(|_, p| *p != "grid:mains").expect("stratified");
     let err = ResolutionView::new(&sys, &r_overload)
-        .check(&cap_law)
-        .expect_err("expected valency deficit");
+        .check_valency("bat:backup", 1500_u32, |b| b.overlap)
+        .expect_err("expected budget deficit");
     let dyn_err: &dyn core::error::Error = &err;
     assert!(dyn_err.to_string().contains("1800"));
     assert_eq!(err.used, 1800);
@@ -183,6 +180,7 @@ enum AllocOffer {
     Cell(u32),
     Req { watts: u32, prio: u8 },
     Grant(u32),
+    Ack(u32),
     DrawNotice(u32),
     Diesel,
 }
@@ -190,6 +188,7 @@ enum AllocOffer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AllocUse {
     AcceptReq,
+    AcceptAck,
     ObserveNotice,
     Draw { min: u32, max: u32 },
 }
@@ -200,6 +199,7 @@ enum AllocRule {
     ProportionalGrant { recipient: &'static str },
     PeerResidualUse { pool_cap: u32, max_wanted: u32 },
     ResidualReq { total_wanted: u32 },
+    GrantAck { use_id: &'static str },
 }
 
 struct AllocAlg;
@@ -211,6 +211,7 @@ impl BodyAlgebra for AllocAlg {
     fn overlap(&self, o: &AllocOffer, u: &AllocUse) -> Option<u32> {
         match (o, u) {
             (AllocOffer::Req { watts, .. }, AllocUse::AcceptReq)
+            | (AllocOffer::Ack(watts), AllocUse::AcceptAck)
             | (AllocOffer::DrawNotice(watts), AllocUse::ObserveNotice) => Some(*watts),
             (AllocOffer::Grant(w), AllocUse::Draw { min, max }) if w >= min => Some((*w).min(*max)),
             _ => None,
@@ -219,6 +220,32 @@ impl BodyAlgebra for AllocAlg {
 }
 
 impl DeriveAlgebra<&'static str, &'static str, AllocRule> for AllocAlg {
+    fn may_overlap(
+        &self,
+        offer: SpecRef<'_, AllocOffer, AllocRule>,
+        use_: SpecRef<'_, AllocUse, AllocRule>,
+    ) -> bool {
+        matches!(
+            (offer, use_),
+            (
+                SpecRef::Derived(
+                    AllocRule::PriorityGrant { .. } | AllocRule::ProportionalGrant { .. }
+                ),
+                SpecRef::Fixed(AllocUse::Draw { .. })
+                    | SpecRef::Derived(AllocRule::PeerResidualUse { .. })
+            ) | (
+                SpecRef::Fixed(AllocOffer::Grant(_)),
+                SpecRef::Derived(AllocRule::PeerResidualUse { .. })
+            ) | (
+                SpecRef::Derived(AllocRule::ResidualReq { .. }),
+                SpecRef::Fixed(AllocUse::AcceptReq)
+            ) | (
+                SpecRef::Derived(AllocRule::GrantAck { .. }),
+                SpecRef::Fixed(AllocUse::AcceptAck)
+            )
+        )
+    }
+
     fn derive_offer(
         &self,
         rule: &AllocRule,
@@ -284,6 +311,10 @@ impl DeriveAlgebra<&'static str, &'static str, AllocRule> for AllocAlg {
                     prio: 1,
                 })
             }
+            AllocRule::GrantAck { use_id } => {
+                let got: u32 = obs.assisted(*use_id).map(|e| e.overlap).sum();
+                (got > 0).then_some(AllocOffer::Ack(got))
+            }
             AllocRule::PeerResidualUse { .. } => None,
         }
     }
@@ -307,6 +338,55 @@ impl DeriveAlgebra<&'static str, &'static str, AllocRule> for AllocAlg {
     }
 }
 
+fn add_alloc_consumers(sys: &mut PromiseSystem<&'static str, &'static str, AllocAlg, AllocRule>) {
+    sys.add_promise(Promise::accept(
+        "hosp:draw",
+        "hosp",
+        AgentSet::single("bank"),
+        AllocUse::Draw {
+            min: 1000,
+            max: 1000,
+        },
+    ));
+    sys.add_promise(
+        Promise::accept(
+            "clinic:draw",
+            "clinic",
+            AgentSet::single("bank"),
+            AllocUse::Draw { min: 1, max: 800 },
+        )
+        .with_scope(AgentSet::All),
+    );
+    // Multi-protocol round-trip: clinic sends a derived `Ack` back to `bank`!
+    // Without `may_overlap`, `clinic:ack -> bank:recv -> bank:grant_clinic -> clinic:draw -> clinic:ack`
+    // would be falsely flagged as an `UnstratifiableCycle`!
+    sys.add_promise(Promise::derive_offer(
+        "clinic:ack",
+        "clinic",
+        AgentSet::single("bank"),
+        [Obs::assisted("clinic:draw")],
+        AllocRule::GrantAck {
+            use_id: "clinic:draw",
+        },
+    ));
+    sys.add_promise(Promise::derive_offer(
+        "clinic:req_aux",
+        "clinic",
+        AgentSet::single("aux"),
+        [Obs::assisted("clinic:draw")],
+        AllocRule::ResidualReq { total_wanted: 800 },
+    ));
+    sys.add_promise(
+        Promise::offer(
+            "clinic:diesel",
+            "clinic",
+            AgentSet::single("clinic"),
+            AllocOffer::Diesel,
+        )
+        .when(!Cond::assisted("clinic:draw")),
+    );
+}
+
 fn build_alloc_bank_system() -> Result<
     PromiseSystem<&'static str, &'static str, AllocAlg, AllocRule>,
     HierarchyError<&'static str>,
@@ -326,6 +406,12 @@ fn build_alloc_bank_system() -> Result<
         )
         .with_scope(AgentSet::All),
     );
+    sys.add_promise(Promise::accept(
+        "bank:recv_ack",
+        "bank",
+        AgentSet::of(["hosp", "clinic"]),
+        AllocUse::AcceptAck,
+    ));
     sys.add_promise(Promise::offer(
         "hosp:req",
         "hosp",
@@ -344,7 +430,9 @@ fn build_alloc_bank_system() -> Result<
             prio: 2,
         },
     ));
-    let bank_obs = vec![
+    // Intentionally pass duplicate `Obs::assisted("bank:recv")` to prove `BTreeSet` deduplicates!
+    let bank_obs = [
+        Obs::assisted("bank:recv"),
         Obs::assisted("bank:recv"),
         Obs::interior("c1:p"),
         Obs::interior("c2:p"),
@@ -366,52 +454,25 @@ fn build_alloc_bank_system() -> Result<
             recipient: "clinic",
         },
     ));
-    sys.add_promise(Promise::accept(
-        "hosp:draw",
-        "hosp",
-        AgentSet::single("bank"),
-        AllocUse::Draw {
-            min: 1000,
-            max: 1000,
-        },
-    ));
-    sys.add_promise(
-        Promise::accept(
-            "clinic:draw",
-            "clinic",
-            AgentSet::single("bank"),
-            AllocUse::Draw { min: 1, max: 800 },
-        )
-        .with_scope(AgentSet::All),
-    );
-    sys.add_promise(Promise::derive_offer(
-        "clinic:req_aux",
-        "clinic",
-        AgentSet::single("aux"),
-        vec![Obs::assisted("clinic:draw")],
-        AllocRule::ResidualReq { total_wanted: 800 },
-    ));
-    sys.add_promise(
-        Promise::offer(
-            "clinic:diesel",
-            "clinic",
-            AgentSet::single("clinic"),
-            AllocOffer::Diesel,
-        )
-        .when(!Cond::assisted("clinic:draw")),
-    );
+    add_alloc_consumers(&mut sys);
     Ok(sys)
 }
 
 #[test]
-fn domain_value_derived_provider_allocation_and_grouped_budget() {
+fn domain_value_derived_provider_allocation_channel_sharpness_and_grouped_budget() {
     let mut sys = build_alloc_bank_system().expect("acyclic");
 
+    // Mixed derived systems honestly return `None` from `try_static_upper_bound()`.
+    assert!(sys.try_static_upper_bound().is_none());
+
+    // Round-trip `clinic:req -> bank:recv -> bank:grant_clinic -> clinic:draw -> clinic:ack -> bank:recv_ack`
+    // stratifies cleanly thanks to `may_overlap` AND never double-counts duplicate `Obs`!
     let r = sys
         .resolve(|obs, p| !(*obs == "bank" && *p == "c1:p"))
-        .expect("stratified");
+        .expect("stratified without spurious cycle");
     assert_eq!(r.offer("bank:grant_hosp"), Some(&AllocOffer::Grant(1000)));
     assert_eq!(r.offer("bank:grant_clinic"), Some(&AllocOffer::Grant(500)));
+    assert_eq!(r.offer("clinic:ack"), Some(&AllocOffer::Ack(500)));
     assert_eq!(
         r.offer("clinic:req_aux"),
         Some(&AllocOffer::Req {
@@ -421,26 +482,31 @@ fn domain_value_derived_provider_allocation_and_grouped_budget() {
     );
     assert!(!r.is_quenched("clinic:diesel"));
 
+    // Heterogeneous `Cap<u32>` budget checks `bank` <= 1500W and `clinic` unbounded in ONE pass!
     let view = ResolutionView::new(&sys, &r);
     assert!(
         view.check_budget(
-            |_, b| (b.promiser == "bank").then_some((b.promiser, b.overlap)),
-            |_| 1500_u32
+            |_, b| Some((b.promiser, Cap::Bounded(b.overlap))),
+            |p| match *p {
+                "bank" => Cap::Bounded(1500_u32),
+                _ => Cap::Unbounded,
+            }
         )
         .is_ok()
     );
     assert_eq!(
         view.check_budget(
-            |_, b| (b.promiser == "bank").then_some((b.promiser, b.overlap)),
-            |_| 1400_u32
+            |_, b| (b.promiser == "bank").then_some((b.promiser, Cap::Bounded(b.overlap))),
+            |_| Cap::Bounded(1400_u32)
         ),
         Err(BudgetDeficit {
             group: "bank",
-            used: 1500,
-            capacity: 1400,
+            used: Cap::Bounded(1500),
+            capacity: Cap::Bounded(1400),
         })
     );
 
+    // Strict clinic (min 800W) rejects 500W -> diesel fires; solo clinic gets 800W -> diesel off.
     sys.add_promise(
         Promise::accept(
             "clinic:draw",
@@ -463,7 +529,8 @@ fn domain_value_derived_provider_allocation_and_grouped_budget() {
     );
     assert!(!r_solo.is_quenched("clinic:diesel"));
 
-    let bank_obs = vec![
+    // Proportional allocation strategy over the exact same Request -> Grant pattern.
+    let bank_obs = [
         Obs::assisted("bank:recv"),
         Obs::interior("c1:p"),
         Obs::interior("c2:p"),
@@ -523,7 +590,7 @@ fn domain_value_derived_peer_residual_and_cycle_rejection() {
         "clinic:draw_leftover",
         "clinic",
         AgentSet::single("grid"),
-        vec![Obs::assisted("clinic:watch_hosp")],
+        [Obs::assisted("clinic:watch_hosp")],
         AllocRule::PeerResidualUse {
             pool_cap: 1500,
             max_wanted: 800,
@@ -546,14 +613,14 @@ fn domain_value_derived_peer_residual_and_cycle_rejection() {
         "a",
         "x",
         AgentSet::All,
-        vec![Obs::self_promise("b")],
+        [Obs::self_promise("b")],
         AllocRule::ResidualReq { total_wanted: 10 },
     ));
     cyc.add_promise(Promise::derive_offer(
         "b",
         "x",
         AgentSet::All,
-        vec![Obs::self_promise("a")],
+        [Obs::self_promise("a")],
         AllocRule::ResidualReq { total_wanted: 10 },
     ));
     assert!(matches!(
@@ -562,22 +629,94 @@ fn domain_value_derived_peer_residual_and_cycle_rejection() {
     ));
 }
 
-#[test]
-fn domain_raft_opaque_superagent_and_irreducible_quorum() {
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    enum Cap {
-        ReplicaVote,
-        LinearizableKv,
-        AppReady,
-    }
-    let alg = SymmetricMeet::new(|o: &Cap, u: &Cap| (o == u).then(|| o.clone()));
-    let mut sys = PromiseSystem::<&str, &str, _>::new(alg);
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RaftCap {
+    ReplicaVote,
+    LinearizableKv,
+    AppReady,
+}
 
-    sys.add_superagent("raft", true);
-    for n in ["n1", "n2", "n3"] {
-        sys.contain("raft", n).expect("acyclic");
-        sys.add_promise(Promise::offer(n, n, AgentSet::All, Cap::ReplicaVote));
+struct RaftAlg;
+
+impl BodyAlgebra for RaftAlg {
+    type Offer = RaftCap;
+    type Use = RaftCap;
+    type Overlap = RaftCap;
+    fn overlap(&self, o: &RaftCap, u: &RaftCap) -> Option<RaftCap> {
+        (o == u).then(|| o.clone())
     }
+}
+
+fn build_nested_raft_system()
+-> Result<PromiseSystem<&'static str, &'static str, RaftAlg>, HierarchyError<&'static str>> {
+    let mut sys = PromiseSystem::new(RaftAlg);
+    // 3-level nested hierarchy: `dc` (transparent) -> `raft` (OPAQUE) -> `{n1, n2, n3}`
+    sys.add_superagent("dc", false);
+    sys.add_superagent("raft", true);
+    sys.contain("dc", "raft")?;
+    for n in ["n1", "n2", "n3"] {
+        sys.contain("raft", n)?;
+        sys.add_promise(Promise::offer(n, n, AgentSet::All, RaftCap::ReplicaVote));
+    }
+    sys.add_promise(
+        Promise::offer("raft:kv", "raft", AgentSet::All, RaftCap::LinearizableKv).when(
+            Cond::at_least(
+                2,
+                vec![
+                    Cond::interior("n1"),
+                    Cond::interior("n2"),
+                    Cond::interior("n3"),
+                ],
+            ),
+        ),
+    );
+    sys.add_promise(
+        Promise::offer("dc:surface_ok", "dc", AgentSet::All, RaftCap::AppReady)
+            .when(Cond::interior("raft:kv")),
+    );
+    sys.add_promise(
+        Promise::offer("dc:pierce_inner", "dc", AgentSet::All, RaftCap::AppReady)
+            .when(Cond::interior("n1")),
+    );
+    sys.add_promise(Promise::offer(
+        "client:local_clock",
+        "client",
+        AgentSet::All,
+        RaftCap::AppReady,
+    ));
+    sys.add_promise(Promise::accept(
+        "client:use_kv",
+        "client",
+        AgentSet::single("raft"),
+        RaftCap::LinearizableKv,
+    ));
+    sys.add_promise(Promise::accept(
+        "client:pierce_n1",
+        "client",
+        AgentSet::single("n1"),
+        RaftCap::ReplicaVote,
+    ));
+    sys.add_promise(
+        Promise::offer("client:app", "client", AgentSet::All, RaftCap::AppReady)
+            .when(Cond::assisted("client:use_kv")),
+    );
+    Ok(sys)
+}
+
+#[test]
+fn domain_raft_opaque_superagent_nested_event_horizon_and_reparent_guard() {
+    let mut sys = build_nested_raft_system().expect("acyclic");
+
+    // Idempotent contain succeeds; silent reparenting & cycles are rejected by construction!
+    assert!(sys.contain("raft", "n1").is_ok());
+    assert_eq!(
+        sys.contain("dc", "n1"),
+        Err(HierarchyError::AlreadyContained {
+            child: "n1",
+            existing_parent: "raft",
+            attempted_parent: "dc",
+        })
+    );
     assert_eq!(
         sys.contain("raft", "raft"),
         Err(HierarchyError::SelfContainment("raft"))
@@ -590,41 +729,21 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
         })
     );
 
-    sys.add_promise(
-        Promise::offer("raft:kv", "raft", AgentSet::All, Cap::LinearizableKv).when(Cond::at_least(
-            2,
-            vec![
-                Cond::interior("n1"),
-                Cond::interior("n2"),
-                Cond::interior("n3"),
-            ],
-        )),
-    );
-    sys.add_promise(Promise::offer(
-        "client:local_clock",
-        "client",
-        AgentSet::All,
-        Cap::AppReady,
-    ));
-    sys.add_promise(Promise::accept(
-        "client:use_kv",
-        "client",
-        AgentSet::single("raft"),
-        Cap::LinearizableKv,
-    ));
-    sys.add_promise(Promise::accept(
-        "client:pierce_n1",
-        "client",
-        AgentSet::single("n1"),
-        Cap::ReplicaVote,
-    ));
-    sys.add_promise(
-        Promise::offer("client:app", "client", AgentSet::All, Cap::AppReady)
-            .when(Cond::assisted("client:use_kv")),
-    );
+    // `lint()` explicitly flags `dc:pierce_inner` as `OpaqueWallBlocked`!
+    assert!(sys.lint().iter().any(|w| matches!(
+        w,
+        ConditionWarning::OpaqueWallBlocked {
+            promise: "dc:pierce_inner",
+            referenced: "n1",
+            superagent: "dc",
+            target_promiser: "n1",
+        }
+    )));
 
     let r3 = sys.resolve_optimistic().expect("stratified");
     assert!(r3.is_quenched("raft:kv"));
+    assert!(r3.is_quenched("dc:surface_ok"));
+    assert!(!r3.is_quenched("dc:pierce_inner"));
     assert!(r3.is_quenched("client:app"));
     assert!(!r3.bindings.iter().any(|b| b.use_id == "client:pierce_n1"));
 
@@ -642,7 +761,11 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
     assert_eq!(dir.interior_agents, BTreeSet::from(["n1", "n2", "n3"]));
     assert_eq!(dir.surface_promises, BTreeSet::from(["raft:kv"]));
 
+    // Event-Horizon Vertex-Cut: `n1` has NO direct `+LeadsTo` edge into `dc:pierce_inner`,
+    // and every path from `n1` to `client:app` passes through `raft:kv`.
     let sst = project_sst(&sys);
+    let pierce_cone = sst.reverse_causal_cone(&SstNode::Promise("dc:pierce_inner"));
+    assert!(!pierce_cone.contains(&SstNode::Promise("n1")));
     let cone = sst.reverse_causal_cone(&SstNode::Promise("client:app"));
     assert!(cone.contains(&SstNode::Promise("raft:kv")));
     assert!(cone.contains(&SstNode::Promise("n1")));
@@ -754,64 +877,80 @@ fn build_tenancy_fleet()
 }
 
 #[test]
-fn domain_tenancy_and_generalized_laws() {
-    let mut sys = build_tenancy_fleet().expect("acyclic");
+fn domain_tenancy_static_discharge_cardinality_and_monoid_cap() {
+    let sys = build_tenancy_fleet().expect("acyclic");
+
+    // Static upper-bound discharge via `try_static_upper_bound()` and `static_upper_bound()`.
+    assert!(sys.try_static_upper_bound().is_some());
+    let upper = sys.static_upper_bound();
+    assert!(
+        upper
+            .discharge_disjoint(|s, b| {
+                let port = b.overlap.0?;
+                let host = s.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
+                Some((host, port))
+            })
+            .is_ok()
+    );
+    assert!(
+        upper
+            .discharge_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
+            .is_ok()
+    );
 
     let r = sys.resolve_optimistic().expect("stratified");
     assert!(r.is_quenched("h1:slot_80"));
     assert!(r.is_quenched("h1:power"));
+    assert!(r.body("h1:power").is_some());
 
     let view = ResolutionView::new(&sys, &r);
-    let check_ports = |v: &ResolutionView<'_, &'static str, &'static str, CloudAlg>| {
-        v.check_disjoint(|s, b| {
-            let port = b.overlap.0?;
-            let host = s.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
-            Some((host, port))
-        })
-    };
-    assert!(check_ports(&view).is_ok());
-
-    assert!(
-        view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
-            .is_ok()
-    );
-    assert!(
-        view.check(&QuorumLaw {
-            use_id: "t1:use_slot",
-            min_providers: 1
-        })
-        .is_ok()
-    );
+    assert!(view.check_quorum("t1:use_slot", 1).is_ok());
     assert_eq!(
-        view.check(&QuorumLaw {
-            use_id: "t1:use_slot",
-            min_providers: 2
-        }),
-        Err(QuorumShortfall {
-            use_id: "t1:use_slot",
-            required: 2,
+        view.check_quorum("t1:use_slot", 2),
+        Err(CardinalityViolation {
+            group: "t1:use_slot",
             actual: 1,
+            min: 2,
+            max: None,
         })
     );
     assert_eq!(
-        view.check(&UniqueProviderLaw {
-            use_id: "nonexistent"
-        }),
-        Err(ProviderCardinalityError {
-            use_id: "nonexistent",
+        view.check_unique_provider("nonexistent"),
+        Err(CardinalityViolation {
+            group: "nonexistent",
             actual: 0,
+            min: 1,
+            max: Some(1),
         })
     );
     assert!(
-        view.check(&ValencyLaw {
-            offer_id: "h1:slot_80",
-            capacity: (MaxOne::One, Unbounded),
-            weight: |_: &Binding<_, _, _>| (MaxOne::One, Unbounded),
-        })
+        view.check_cardinality(
+            [("t1:use_slot", 1, Some(1)), ("t2:use_slot", 1, Some(2))],
+            |_, b| Some(b.use_id)
+        )
         .is_ok()
     );
-    assert_eq!(MaxOne::One.add(&MaxOne::One), MaxOne::Overflow);
+    assert!(
+        view.check_valency(
+            "h1:slot_80",
+            (Cap::Bounded(1_usize), Cap::Unbounded::<u32>),
+            |_| (Cap::Bounded(1_usize), Cap::Unbounded::<u32>),
+        )
+        .is_ok()
+    );
+    assert!(!ResourceMonoid::le(
+        &Cap::Bounded(2_usize),
+        &Cap::Bounded(1_usize)
+    ));
+    assert!(ResourceMonoid::le(
+        &Cap::Bounded(999_usize),
+        &Cap::Unbounded
+    ));
+}
 
+#[test]
+fn domain_tenancy_collisions_and_agreement_drift() {
+    let mut sys = build_tenancy_fleet().expect("acyclic");
     sys.contain("host1", "tenant1b").expect("acyclic");
     sys.add_promise(Promise::accept(
         "t1b:use_slot",
@@ -823,7 +962,12 @@ fn domain_tenancy_and_generalized_laws() {
         },
     ));
     let r_collide = sys.resolve_optimistic().expect("stratified");
-    let err = check_ports(&ResolutionView::new(&sys, &r_collide))
+    let err = ResolutionView::new(&sys, &r_collide)
+        .check_disjoint(|s, b| {
+            let port = b.overlap.0?;
+            let host = s.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
+            Some((host, port))
+        })
         .expect_err("expected per-host port collision");
     assert_eq!(err.key, ("host1", 80));
 
@@ -886,7 +1030,6 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
         Promise::offer("A:tls", "A", AgentSet::single("B"), CloudSvc::Tls)
             .when(Cond::assisted("A:use_dns")),
     );
-    // Also check SelfPromise incomplete info (B cannot see A's private self-promise)!
     sys.add_promise(
         Promise::offer("A:private_flag", "A", AgentSet::single("A"), CloudSvc::Net)
             .with_scope(AgentSet::single("A")),
@@ -932,7 +1075,7 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
 }
 
 #[test]
-fn static_lint_overwrites_null_potent_and_nested_negation() {
+fn static_lint_overwrites_null_potent_unknown_targets_and_nested_negation() {
     let mut dbl = PromiseSystem::<&str, &str, _>::new(CloudAlg);
     assert!(
         dbl.add_promise(Promise::offer("a", "z", AgentSet::All, CloudSvc::Net))
@@ -965,9 +1108,17 @@ fn static_lint_overwrites_null_potent_and_nested_negation() {
             Cond::assisted("x:off"),
             Cond::assisted("y:lonely"),
             Cond::interior("x:off"),
+            Cond::at_least(3, vec![Cond::self_promise("y:lonely")]),
         ])),
     );
     let diagnostics = lint_sys.lint();
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::UnknownTargetAgent {
+            promise: "y:lonely",
+            target: "ghost",
+        }
+    )));
     assert!(diagnostics.iter().any(|w| matches!(
         w,
         ConditionWarning::DanglingRef {
@@ -999,16 +1150,25 @@ fn static_lint_overwrites_null_potent_and_nested_negation() {
     assert!(diagnostics.iter().any(|w| matches!(
         w,
         ConditionWarning::UnsatisfiableMinCount {
-            referenced: "y:lonely",
+            referenced: Some("y:lonely"),
             required: 1,
             max_possible: 0,
+            ..
+        }
+    )));
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::UnsatisfiableMinCount {
+            referenced: None,
+            required: 3,
+            max_possible: 1,
             ..
         }
     )));
 }
 
 #[test]
-fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
+fn strict_gamma_3_4_invariants_dual_links_kind_filtered_sources_and_coarse_graining() {
     let mut g = SstGraph::new();
     g.add_node("love", NodeKind::Concept).unwrap();
     g.add_node("butterfly", NodeKind::Thing).unwrap();
@@ -1063,8 +1223,12 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
         g.forward_causal_cone(&"flight"),
         BTreeSet::from(["flight", "landing"])
     );
-    assert!(g.sources(LinkKind::LeadsTo).contains("flight"));
-    assert!(g.sinks(LinkKind::LeadsTo).contains("landing"));
+    // Unregistered start nodes return an empty cone (never hallucinate `{unknown}`).
+    assert!(g.forward_causal_cone(&"typo_node").is_empty());
+
+    // Strict γ(3,4) kind filtering: `LeadsTo` sources/sinks include ONLY `Event` nodes!
+    assert_eq!(g.sources(LinkKind::LeadsTo), BTreeSet::from(["flight"]));
+    assert_eq!(g.sinks(LinkKind::LeadsTo), BTreeSet::from(["landing"]));
     assert!(
         g.reachable_along(&"sky", LinkKind::Near, false)
             .contains("blue")

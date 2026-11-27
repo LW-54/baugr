@@ -8,11 +8,16 @@ use alloc::vec::Vec;
 use super::cond::{Cond, Obs};
 use super::system::{CompatIndex, PromiseSystem};
 use super::{
-    Binding, Body, BodyAlgebra, BodySpec, DeriveAlgebra, EvalError, LocalView, ObservedOffer,
-    ObservedUse, Promise, Resolved,
+    Binding, Body, DeriveAlgebra, EvalError, LocalView, ObservedOffer, ObservedUse, Promise,
+    Resolved, Spec,
 };
 
-impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R> {
+impl<A, P, D, R> PromiseSystem<A, P, D, R>
+where
+    A: Ord + Clone,
+    P: Ord + Clone,
+    D: DeriveAlgebra<A, P, R>,
+{
     /// Computes a minimal valid stratification rank per promise via Kosaraju SCC decomposition.
     ///
     /// Positive `Cond` dependencies satisfy `rank(dep) <= rank(p)`; negated `Cond`
@@ -35,7 +40,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
         let mut deps: BTreeMap<P, Vec<(P, bool)>> = BTreeMap::new();
         for (pid, pr) in &self.promises {
             let mut d = Vec::new();
-            compat.promise_deps(&pr.cond, pr.obs(), &mut d);
+            self.collect_promise_deps(compat, pr, &mut d);
             deps.insert(pid.clone(), d);
         }
 
@@ -151,7 +156,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
                 .get(q)
                 .is_some_and(|pq| &pq.promiser == me && bodies.contains_key(q) && alpha(me, q)),
             Cond::Interior(q) => self.promises.get(q).is_some_and(|pq| {
-                self.hierarchy.is_strict_ancestor(me, &pq.promiser)
+                self.hierarchy.visible_interior(me, &pq.promiser)
                     && bodies.contains_key(q)
                     && alpha(me, q)
             }),
@@ -222,7 +227,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
         alpha: &F,
         bodies: &'a BTreeMap<P, Body<D::Offer, D::Use>>,
         me: &A,
-        obs: &'a [Obs<P>],
+        obs: &'a BTreeSet<Obs<P>>,
     ) -> LocalView<'a, A, P, D>
     where
         F: Fn(&A, &P) -> bool,
@@ -294,7 +299,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
                 }
                 Obs::Interior(q) => {
                     if let (Some(pq), Some(b)) = (self.promises.get(q), bodies.get(q))
-                        && self.hierarchy.is_strict_ancestor(me, &pq.promiser)
+                        && self.hierarchy.visible_interior(me, &pq.promiser)
                         && alpha(me, q)
                     {
                         interior_bodies.push((&pq.id, &pq.promiser, b));
@@ -317,8 +322,8 @@ where
     A: Ord + Clone,
     P: Ord + Clone,
     D: DeriveAlgebra<A, P, R>,
-    D::Offer: Clone + PartialEq,
-    D::Use: Clone + PartialEq,
+    D::Offer: Clone,
+    D::Use: Clone,
 {
     fn eval_rule<F>(
         &self,
@@ -330,13 +335,14 @@ where
     where
         F: Fn(&A, &P) -> bool,
     {
-        match &pr.spec {
-            BodySpec::Fixed(b) => Some(b.clone()),
-            BodySpec::DerivedOffer { obs, rule } => {
+        match &pr.body {
+            Body::Offer(Spec::Fixed(o)) => Some(Body::Offer(o.clone())),
+            Body::Use(Spec::Fixed(u)) => Some(Body::Use(u.clone())),
+            Body::Offer(Spec::Derived { obs, rule }) => {
                 let view = self.build_local_view(compat, alpha, bodies, &pr.promiser, obs);
                 self.algebra.derive_offer(rule, &view).map(Body::Offer)
             }
-            BodySpec::DerivedUse { obs, rule } => {
+            Body::Use(Spec::Derived { obs, rule }) => {
                 let view = self.build_local_view(compat, alpha, bodies, &pr.promiser, obs);
                 self.algebra.derive_use(rule, &view).map(Body::Use)
             }
@@ -374,23 +380,34 @@ where
                 }
             }
 
+            // Synchronous Jacobi step within stratum `s`: candidates are frozen, so fixed-point
+            // convergence tracks presence flips with zero `BTreeMap` cloning and no `PartialEq` bound.
             loop {
-                let mut next = bodies.clone();
+                let mut to_insert = Vec::new();
+                let mut to_remove = Vec::new();
                 for pid in &cur_ids {
                     if let Some(pr) = self.promises.get(pid) {
-                        if self.eval_cond(&compat, &alpha, &bodies, &pr.promiser, &pr.cond)
-                            && let Some(body) = candidates.get(pid)
-                        {
-                            next.insert(pid.clone(), body.clone());
-                        } else {
-                            next.remove(pid);
+                        let active = candidates.contains_key(pid)
+                            && self.eval_cond(&compat, &alpha, &bodies, &pr.promiser, &pr.cond);
+                        let was_active = bodies.contains_key(pid);
+                        if active && !was_active {
+                            to_insert.push(pid.clone());
+                        } else if !active && was_active {
+                            to_remove.push(pid.clone());
                         }
                     }
                 }
-                if next == bodies {
+                if to_insert.is_empty() && to_remove.is_empty() {
                     break;
                 }
-                bodies = next;
+                for pid in to_insert {
+                    if let Some(body) = candidates.get(&pid) {
+                        bodies.insert(pid, body.clone());
+                    }
+                }
+                for pid in to_remove {
+                    bodies.remove(&pid);
+                }
             }
         }
 

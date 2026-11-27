@@ -1,5 +1,6 @@
 /-
-  Baugr.Law — Generalized Monoidal Promise Valency & Composable ScopeLaw Algebra
+  Baugr.Law — Generalized Monoidal Promise Valency, Top-Completion `Cap R`,
+  and Composable ScopeLaw Algebra
   Derived directly from Mark Burgess (2015, arXiv:1505.01716v1 §2.7 & §4.1).
 -/
 
@@ -31,6 +32,51 @@ instance : ResourceMonoid Nat where
   add_assoc  := Nat.add_assoc
   zero_le    := Nat.zero_le
   add_le_add := fun _ _ _ _ => Nat.add_le_add
+
+/-- Top-completion `R⊤` adjoining an unbounded ceiling `∞` to any `ResourceMonoid R`.
+    Unifies exclusive (`bounded 1`), finite (`bounded n`), and broadcast (`unbounded`)
+    valencies inside a single heterogeneous Ordered Commutative Monoid. -/
+inductive Cap (R : Type) where
+  | bounded (val : R)
+  | unbounded
+  deriving DecidableEq, Repr
+
+instance {R : Type} [ResourceMonoid R] : ResourceMonoid (Cap R) where
+  zero := .bounded ResourceMonoid.zero
+  add a b :=
+    match a, b with
+    | .bounded x, .bounded y => .bounded (ResourceMonoid.add x y)
+    | _,          _          => .unbounded
+  le a b :=
+    match a, b with
+    | _,          .unbounded => True
+    | .unbounded, .bounded _ => False
+    | .bounded x, .bounded y => ResourceMonoid.le x y
+  le_refl x := by cases x with | bounded r => exact ResourceMonoid.le_refl r | unbounded => trivial
+  le_trans a b c h1 h2 := by
+    cases a <;> cases b <;> cases c <;> simp_all
+    exact ResourceMonoid.le_trans _ _ _ h1 h2
+  add_zero x := by
+    cases x with
+    | bounded r => exact congrArg Cap.bounded (ResourceMonoid.add_zero r)
+    | unbounded => rfl
+  zero_add x := by
+    cases x with
+    | bounded r => exact congrArg Cap.bounded (ResourceMonoid.zero_add r)
+    | unbounded => rfl
+  add_comm a b := by
+    cases a <;> cases b <;> try rfl
+    exact congrArg Cap.bounded (ResourceMonoid.add_comm _ _)
+  add_assoc a b c := by
+    cases a <;> cases b <;> cases c <;> try rfl
+    exact congrArg Cap.bounded (ResourceMonoid.add_assoc _ _ _)
+  zero_le x := by
+    cases x with
+    | bounded r => exact ResourceMonoid.zero_le r
+    | unbounded => trivial
+  add_le_add a b c d h1 h2 := by
+    cases a <;> cases b <;> cases c <;> cases d <;> simp_all
+    exact ResourceMonoid.add_le_add _ _ _ _ h1 h2
 
 /-- Cartesian product of Ordered Commutative Monoids (multi-dimensional budgets). -/
 instance {R₁ R₂ : Type} [ResourceMonoid R₁] [ResourceMonoid R₂] : ResourceMonoid (R₁ × R₂) where

@@ -1,14 +1,15 @@
 //! Microgrid failover with an opaque 2-of-3 battery-bank superagent, emergent
 //! interior-cell capacity, voluntary Request -> Computed Grant priority allocation
-//! (`+f(obs) | C`), autonomous consumer handling (partial take + multi-provider
-//! residual split vs. all-or-nothing automatic diesel failover), blocked piercing,
-//! grouped `BudgetBy` + `AgreementBy`, light cones, and superagent directory.
+//! (`+f(obs) | C`) with channel-sharp `may_overlap`, autonomous consumer handling
+//! (partial take + multi-provider residual split vs. all-or-nothing automatic diesel
+//! failover), blocked piercing, grouped `BudgetBy` (`Cap<u32>`) + `AgreementBy`,
+//! light cones, and superagent directory.
 //!
 //! Run with: `cargo run --example microgrid`
 
 use baugr::{
-    AgentSet, BodyAlgebra, Cond, DeriveAlgebra, HierarchyError, LocalView, Obs, Promise,
-    PromiseSystem, ResolutionView, SstNode, directory_of, project_sst,
+    AgentSet, Body, BodyAlgebra, Cap, Cond, DeriveAlgebra, HierarchyError, LocalView, Obs, Promise,
+    PromiseSystem, ResolutionView, SpecRef, SstNode, directory_of, project_sst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +83,22 @@ impl BodyAlgebra for GridAlgebra {
 }
 
 impl DeriveAlgebra<&'static str, &'static str, GridRule> for GridAlgebra {
+    fn may_overlap(
+        &self,
+        offer: SpecRef<'_, GridOffer, GridRule>,
+        use_: SpecRef<'_, GridUse, GridRule>,
+    ) -> bool {
+        match (offer, use_) {
+            (SpecRef::Derived(GridRule::PriorityGrant { .. }), SpecRef::Fixed(u)) => {
+                matches!(u, GridUse::DrawPower { .. })
+            }
+            (SpecRef::Derived(GridRule::ResidualRequest { .. }), SpecRef::Fixed(u)) => {
+                matches!(u, GridUse::AcceptRequests)
+            }
+            _ => false,
+        }
+    }
+
     fn derive_offer(
         &self,
         rule: &GridRule,
@@ -89,10 +106,10 @@ impl DeriveAlgebra<&'static str, &'static str, GridRule> for GridAlgebra {
     ) -> Option<GridOffer> {
         match rule {
             GridRule::PriorityGrant { recipient } => {
-                // Emergent capacity = sum of healthy interior cells (0 if < 2 alive).
+                // Emergent capacity = sum of healthy interior cells (1600W with 2/3, 2400W with 3/3).
                 let mut total_cap: u32 = 0;
                 for (_, _, body) in obs.interior_entries() {
-                    if let baugr::Body::Offer(GridOffer::CellPower { watts }) = body {
+                    if let Body::Offer(GridOffer::CellPower { watts }) = body {
                         total_cap = total_cap.saturating_add(*watts);
                     }
                 }
@@ -208,7 +225,7 @@ fn add_battery_bank(sys: &mut MicrogridSystem) -> Result<(), HierarchyError<&'st
             ],
         ),
     ]);
-    let bank_obs = vec![
+    let bank_obs = [
         Obs::assisted("bank:recv_req"),
         Obs::interior("cell1:chg"),
         Obs::interior("cell2:chg"),
@@ -304,7 +321,7 @@ fn add_consumers(sys: &mut MicrogridSystem, clinic_min_watts: u32) {
         "clinic:req_aux",
         "clinic",
         AgentSet::single("aux"),
-        vec![Obs::assisted("clinic:draw")],
+        [Obs::assisted("clinic:draw")],
         GridRule::ResidualRequest {
             primary_use: "clinic:draw",
             total_wanted: 800,
@@ -341,17 +358,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let partial = partial_sys.resolve(blackout)?;
     let pierce_blocked = !partial.bindings.iter().any(|b| b.use_id == "hosp:pierce");
 
-    // Independent safety net: grouped `BudgetBy` verifies bank's total grants <= 1600W
-    // and `AgreementBy` verifies site-wide 230V agreement C(b).
+    // Independent safety net: heterogeneous `Cap<u32>` grouped `BudgetBy` checks `bank` <= 1600W
+    // and `grid` unbounded (`#∞`) in one pass, plus site-wide 230V `AgreementBy` C(b).
     let view = ResolutionView::new(&partial_sys, &partial);
     view.check_budget(
         |_, b| match b.overlap {
-            GridOverlap::Supplied { watts, .. } if b.promiser == "bank" => {
-                Some((b.promiser, watts))
-            }
-            _ => None,
+            GridOverlap::Supplied { watts, .. } => Some((b.promiser, Cap::Bounded(watts))),
+            GridOverlap::Requested { .. } => None,
         },
-        |_| 1600_u32,
+        |p| match *p {
+            "bank" => Cap::Bounded(1600_u32),
+            _ => Cap::Unbounded,
+        },
     )?;
     view.check_agreement(|_, b| match b.overlap {
         GridOverlap::Supplied { voltage, .. } => Some(("site-bus", voltage)),

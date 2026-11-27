@@ -2,9 +2,10 @@
   Baugr.Oracle.Main — Dev/CI Executable DRT Oracle (Cedar VGD)
   Reads compact CASE blocks from stdin, evaluates them using the EXACT Lean 4
   specification (`evalStratified`, `activeBindings`, `projectSst`) with a bitmask
-  mutual-information BodyAlgebra (`b₁ ∩ b₂ = (o &&& u) ≠ 0`) and value-derived
-  conditional promises (`+f(obs) | C`), and emits canonical sorted results to stdout
-  for bit-for-bit Rust ↔ Lean differential testing.
+  mutual-information BodyAlgebra (`b₁ ∩ b₂ = (o &&& u) ≠ 0`), optional static
+  channel masks (`ruleCompat` mirroring Rust's `DeriveAlgebra::may_overlap`), and
+  value-derived conditional promises (`+f(obs) | C`), and emits canonical sorted
+  results to stdout for bit-for-bit Rust ↔ Lean differential testing.
 -/
 import Baugr
 
@@ -89,6 +90,7 @@ private structure RawCase where
   parents    : List (Nat × Nat) := []
   opaques    : List Nat := []
   promises   : List (Promise Nat Nat Nat Nat Nat) := []
+  chanMasks  : List (Nat × Nat) := []
   broken     : List (Nat × Nat) := []
   strata     : List (Nat × Nat) := []
   maxStratum : Nat := 0
@@ -120,11 +122,14 @@ private def evalCase (caseIdx : Nat) (rc : RawCase) : Except String String :=
   let hierarchy : Hierarchy Nat :=
     { parent   := fun a => (rc.parents.find? (fun p => p.1 == a)).map Prod.snd
       isOpaque := fun a => rc.opaques.contains a }
+  let maskOf (pid : Nat) : Nat :=
+    ((rc.chanMasks.find? (fun p => p.1 == pid)).map Prod.snd).getD 7
   let sys : PromiseSystem Nat Nat Nat Nat Nat :=
-    { agents    := agents
-      promises  := rc.promises.reverse
-      hierarchy := hierarchy
-      algebra   := bitmaskAlgebra }
+    { agents     := agents
+      promises   := rc.promises.reverse
+      hierarchy  := hierarchy
+      algebra    := bitmaskAlgebra
+      ruleCompat := fun oid uid => (maskOf oid &&& maskOf uid) != 0 }
   let α : Assessment Nat Nat := fun obs pid => !(rc.broken.contains (obs, pid))
   let rank : Nat → Nat := fun pid => ((rc.strata.find? (fun p => p.1 == pid)).map Prod.snd).getD 0
   if !checkValidStratification sys rank then
@@ -185,32 +190,35 @@ private def processLines (lines : List String) : Except String String :=
           | ["STEPS", s] =>
               go idx { cur with steps := parseNat s } out rest
           | "PROMISE" :: idS :: promS :: polS :: tgtS :: scS :: bodyS :: condToks =>
+              let pid := parseNat idS
               let bVal := parseNat bodyS
-              let spec := if polS == "O" then BodySpec.fixedOffer bVal else BodySpec.fixedUse bVal
+              let body := if polS == "O" then Body.offer (.fixed bVal) else Body.use (.fixed bVal)
               let (cond, _) := parseCondTokens (condToks.length + 1) condToks
               let pr : Promise Nat Nat Nat Nat Nat :=
-                { id       := parseNat idS
+                { id       := pid
                   promiser := parseNat promS
                   target   := parseAgentSet tgtS
                   scope    := parseAgentSet scS
-                  spec     := spec
+                  body     := body
                   cond     := cond }
-              go idx { cur with promises := pr :: cur.promises } out rest
-          | "DERIVED" :: idS :: promS :: polS :: tgtS :: scS :: seedS :: obsCountS :: tailToks =>
+              go idx { cur with promises := pr :: cur.promises, chanMasks := (pid, bVal) :: cur.chanMasks } out rest
+          | "DERIVED" :: idS :: promS :: polS :: tgtS :: scS :: seedS :: maskS :: obsCountS :: tailToks =>
+              let pid := parseNat idS
               let seed := parseNat seedS
+              let mask := parseNat maskS
               let (obs, condToks) := parseObsTokens (parseNat obsCountS) tailToks
-              let spec :=
-                if polS == "O" then BodySpec.derivedOffer obs (deriveBitmask seed)
-                else BodySpec.derivedUse obs (deriveBitmask seed)
+              let body :=
+                if polS == "O" then Body.offer (.derived obs (deriveBitmask seed))
+                else Body.use (.derived obs (deriveBitmask seed))
               let (cond, _) := parseCondTokens (condToks.length + 1) condToks
               let pr : Promise Nat Nat Nat Nat Nat :=
-                { id       := parseNat idS
+                { id       := pid
                   promiser := parseNat promS
                   target   := parseAgentSet tgtS
                   scope    := parseAgentSet scS
-                  spec     := spec
+                  body     := body
                   cond     := cond }
-              go idx { cur with promises := pr :: cur.promises } out rest
+              go idx { cur with promises := pr :: cur.promises, chanMasks := (pid, mask) :: cur.chanMasks } out rest
           | _ => go idx cur out rest
   go 0 {} "" lines
 

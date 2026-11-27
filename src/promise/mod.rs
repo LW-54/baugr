@@ -39,6 +39,16 @@ pub trait BodyAlgebra {
     fn overlap(&self, offer: &Self::Offer, use_: &Self::Use) -> Option<Self::Overlap>;
 }
 
+/// Read-only view of either a fixed constant body or a derived rule, passed to
+/// [`DeriveAlgebra::may_overlap`] for conservative static channel compatibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecRef<'a, T, R = Infallible> {
+    /// Static constant offer/use body.
+    Fixed(&'a T),
+    /// Value-derived offer/use rule.
+    Derived(&'a R),
+}
+
 /// Optional extension of [`BodyAlgebra`] for value-dependent conditional promises
 /// (`+f(obs) | C` and `-f(obs) | C`, `arXiv:1505.01716v1` §4.1).
 ///
@@ -55,6 +65,22 @@ pub trait DeriveAlgebra<A, P, R>: BodyAlgebra {
     /// returning `None` to leave the promise unquenched.
     fn derive_use(&self, _rule: &R, _obs: &LocalView<'_, A, P, Self>) -> Option<Self::Use> {
         None
+    }
+
+    /// Optional conservative static channel compatibility filter between an offer
+    /// specification and a use specification when at least one endpoint is derived.
+    ///
+    /// Defaults to `true` (every structurally bindable derived pair may bind).
+    /// Implementing this in multi-protocol systems (e.g., returning `false` between
+    /// a `PowerGrant` rule and an `AcceptRequests` use) keeps stratification acyclic
+    /// and Semantic Spacetime light cones sharp. Because runtime overlap gates on
+    /// static compatibility, all Lean 4 laws remain 100% sound for any implementation.
+    fn may_overlap(
+        &self,
+        _offer: SpecRef<'_, Self::Offer, R>,
+        _use_: SpecRef<'_, Self::Use, R>,
+    ) -> bool {
+        true
     }
 }
 
@@ -108,9 +134,10 @@ where
     }
 }
 
-/// Unified polarity and typed body (ratified in `ADR-0018` A1).
+/// Unified polarity and typed payload (ratified in `ADR-0018` A1).
 ///
-/// Illegal polarity/body mismatches are structurally unrepresentable.
+/// Polarity lives exclusively here; illegal polarity/body mismatches are
+/// structurally unrepresentable.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Body<O, U> {
     /// `+b`: offer / assertion promise made by the promiser.
@@ -119,26 +146,38 @@ pub enum Body<O, U> {
     Use(U),
 }
 
-/// Polarity-preserving promise body specification: either a static constant body
-/// or a value-derived body computed from declared local [`Obs`] observations.
+/// Orthogonal static-vs-derived body specification parameterized by payload type `T`.
+///
+/// Paired with [`Body`] as `Body<Spec<P, O, R>, Spec<P, U, R>>`, eliminating duplicate
+/// polarity tagging and enforcing deduplicated canonical [`Obs`] sets by construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BodySpec<P, O, U, R = Infallible> {
-    /// Static constant offer or acceptance body (`+b` / `-b`).
-    Fixed(Body<O, U>),
-    /// Value-derived offer body (`+f(obs) | C`).
-    DerivedOffer {
-        /// Autonomy-grounded local observations read by `rule`.
-        obs: Vec<Obs<P>>,
-        /// Domain-defined derivation rule value.
+pub enum Spec<P, T, R = Infallible> {
+    /// Static constant offer or acceptance payload (`+b` / `-b`).
+    Fixed(T),
+    /// Value-derived payload computed strictly from deduplicated local observations (`+f(obs)` / `-f(obs)`).
+    Derived {
+        /// Deduplicated canonical set of autonomy-grounded local observations read by `rule`.
+        obs: BTreeSet<Obs<P>>,
+        /// Domain-defined pure-data derivation rule value.
         rule: R,
     },
-    /// Value-derived acceptance/use body (`-f(obs) | C`).
-    DerivedUse {
-        /// Autonomy-grounded local observations read by `rule`.
-        obs: Vec<Obs<P>>,
-        /// Domain-defined derivation rule value.
-        rule: R,
-    },
+}
+
+impl<P, T, R> Spec<P, T, R> {
+    /// Borrows this specification as a lightweight [`SpecRef`].
+    #[must_use]
+    pub const fn as_ref(&self) -> SpecRef<'_, T, R> {
+        match self {
+            Self::Fixed(v) => SpecRef::Fixed(v),
+            Self::Derived { rule, .. } => SpecRef::Derived(rule),
+        }
+    }
+
+    /// Returns `true` if this specification is value-derived (`+f(obs)` / `-f(obs)`).
+    #[must_use]
+    pub const fn is_derived(&self) -> bool {
+        matches!(self, Self::Derived { .. })
+    }
 }
 
 /// A kept upstream offer observed via [`Obs::Assisted`] inside a [`LocalView`].
@@ -171,18 +210,18 @@ pub struct ObservedUse<'a, A, P, U, M> {
     pub overlap: M,
 }
 
-/// Shorthand for a [`Body`] parameterized by a [`BodyAlgebra`].
+/// Shorthand for a resolved [`Body`] parameterized by a [`BodyAlgebra`].
 pub type AlgebraBody<D> = Body<<D as BodyAlgebra>::Offer, <D as BodyAlgebra>::Use>;
 
 /// Shorthand for a [`Promise`] parameterized by a [`BodyAlgebra`] and derivation rule `R`.
 pub type AlgebraPromise<A, P, D, R = Infallible> =
     Promise<A, P, <D as BodyAlgebra>::Offer, <D as BodyAlgebra>::Use, R>;
 
-/// Restricted autonomy-grounded observation snapshot handed to [`DeriveAlgebra`].
+/// Restricted deduplicated autonomy-grounded observation snapshot handed to [`DeriveAlgebra`].
 ///
-/// Mirrors `Lean`'s `LocalObs` 1:1: only values explicitly declared in the
-/// promise's `obs` list and passing ownership, opaque-wall, scope, and local
-/// assessment `α(promiser, _)` checks appear here.
+/// Mirrors `Lean`'s `LocalObs` 1:1: only values explicitly declared in the promise's
+/// canonical `BTreeSet<Obs<P>>` and passing ownership, recursive opaque-wall, scope,
+/// and local assessment `α(promiser, _)` checks appear here—each at most once.
 pub struct LocalView<'a, A, P, D: BodyAlgebra + ?Sized> {
     pub(crate) self_bodies: Vec<(&'a P, &'a AlgebraBody<D>)>,
     pub(crate) assisted_offers: Vec<ObservedOffer<'a, A, P, D::Offer, D::Overlap>>,
@@ -210,25 +249,25 @@ where
 }
 
 impl<'a, A, P, D: BodyAlgebra + ?Sized> LocalView<'a, A, P, D> {
-    /// All observed self-promise `(id, body)` pairs in declared observation order.
+    /// All observed self-promise `(id, body)` pairs in canonical order.
     #[must_use]
     pub fn self_entries(&self) -> &[(&'a P, &'a AlgebraBody<D>)] {
         &self.self_bodies
     }
 
-    /// All observed assisted upstream offers in declared observation order.
+    /// All observed assisted upstream offers in canonical order.
     #[must_use]
     pub fn assisted_entries(&self) -> &[ObservedOffer<'a, A, P, D::Offer, D::Overlap>] {
         &self.assisted_offers
     }
 
-    /// All observed visible acceptances in declared observation order.
+    /// All observed visible acceptances in canonical order.
     #[must_use]
     pub fn accepted_entries(&self) -> &[ObservedUse<'a, A, P, D::Use, D::Overlap>] {
         &self.accepted_uses
     }
 
-    /// All observed interior sub-agent `(promise_id, promiser, body)` triples.
+    /// All observed interior sub-agent `(promise_id, promiser, body)` triples in canonical order.
     #[must_use]
     pub fn interior_entries(&self) -> &[(&'a P, &'a A, &'a AlgebraBody<D>)] {
         &self.interior_bodies
@@ -364,8 +403,8 @@ impl<A: Ord> AgentSet<A> {
 /// A directed conditional promise with static or value-derived body.
 ///
 /// Separates promisee `target` from witness observability `scope` (`arXiv:0810.3294v5`
-/// L722, `arXiv:1401.3381v1` L663) and supports both constant bodies (`+b | C`) and
-/// value-derived bodies (`+f(obs) | C`, `arXiv:1505.01716v1` §4.1).
+/// L722, `arXiv:1401.3381v1` L663) and unifies polarity with static/derived specifications
+/// via `Body<Spec<P, O, R>, Spec<P, U, R>>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Promise<A, P, O, U, R = Infallible> {
     /// Unique identifier of this promise.
@@ -376,8 +415,8 @@ pub struct Promise<A, P, O, U, R = Infallible> {
     pub target: AgentSet<A>,
     /// Observability scope `σ` (effective scope always includes `promiser`).
     pub scope: AgentSet<A>,
-    /// Polarity and static or value-derived body specification.
-    pub spec: BodySpec<P, O, U, R>,
+    /// Polarity (`Offer` / `Use`) paired with static or value-derived body specification.
+    pub body: Body<Spec<P, O, R>, Spec<P, U, R>>,
     /// Boolean quenching condition (`Cond::always()` for unconditional promises).
     pub cond: Cond<P>,
 }
@@ -392,7 +431,7 @@ impl<A: Ord + Clone, P, O, U, R> Promise<A, P, O, U, R> {
             promiser,
             target,
             scope,
-            spec: BodySpec::Fixed(Body::Offer(body)),
+            body: Body::Offer(Spec::Fixed(body)),
             cond: Cond::always(),
         }
     }
@@ -406,43 +445,61 @@ impl<A: Ord + Clone, P, O, U, R> Promise<A, P, O, U, R> {
             promiser,
             target,
             scope,
-            spec: BodySpec::Fixed(Body::Use(body)),
+            body: Body::Use(Spec::Fixed(body)),
             cond: Cond::always(),
         }
     }
 
     /// Creates a value-derived offer promise (`+f(obs)`) whose effective body is computed
-    /// strictly from declared local observations `obs` via `rule`.
+    /// strictly from deduplicated declared local observations `obs` via `rule`.
     #[must_use]
     pub fn derive_offer(
         id: P,
         promiser: A,
         target: AgentSet<A>,
-        obs: Vec<Obs<P>>,
+        obs: impl IntoIterator<Item = Obs<P>>,
         rule: R,
-    ) -> Self {
+    ) -> Self
+    where
+        P: Ord,
+    {
         let scope = default_scope(&promiser, &target);
         Self {
             id,
             promiser,
             target,
             scope,
-            spec: BodySpec::DerivedOffer { obs, rule },
+            body: Body::Offer(Spec::Derived {
+                obs: obs.into_iter().collect(),
+                rule,
+            }),
             cond: Cond::always(),
         }
     }
 
     /// Creates a value-derived acceptance/use promise (`-f(obs)`) whose effective body is
-    /// computed strictly from declared local observations `obs` via `rule`.
+    /// computed strictly from deduplicated declared local observations `obs` via `rule`.
     #[must_use]
-    pub fn derive_use(id: P, promiser: A, target: AgentSet<A>, obs: Vec<Obs<P>>, rule: R) -> Self {
+    pub fn derive_use(
+        id: P,
+        promiser: A,
+        target: AgentSet<A>,
+        obs: impl IntoIterator<Item = Obs<P>>,
+        rule: R,
+    ) -> Self
+    where
+        P: Ord,
+    {
         let scope = default_scope(&promiser, &target);
         Self {
             id,
             promiser,
             target,
             scope,
-            spec: BodySpec::DerivedUse { obs, rule },
+            body: Body::Use(Spec::Derived {
+                obs: obs.into_iter().collect(),
+                rule,
+            }),
             cond: Cond::always(),
         }
     }
@@ -470,28 +527,34 @@ impl<A: Ord + Clone, P, O, U, R> Promise<A, P, O, U, R> {
     /// Returns `true` if this promise is a positive offer (`+b` or `+f(obs)`).
     #[must_use]
     pub const fn is_offer(&self) -> bool {
-        matches!(
-            self.spec,
-            BodySpec::Fixed(Body::Offer(_)) | BodySpec::DerivedOffer { .. }
-        )
+        matches!(self.body, Body::Offer(_))
     }
 
     /// Returns `true` if this promise is a negative acceptance/use (`-b` or `-f(obs)`).
     #[must_use]
     pub const fn is_use(&self) -> bool {
-        matches!(
-            self.spec,
-            BodySpec::Fixed(Body::Use(_)) | BodySpec::DerivedUse { .. }
-        )
+        matches!(self.body, Body::Use(_))
     }
 
-    /// Returns the declared [`Obs`] slice for derived promises (empty for static promises).
+    /// Returns `true` if this promise computes its body dynamically via [`DeriveAlgebra`].
     #[must_use]
-    pub fn obs(&self) -> &[Obs<P>] {
-        match &self.spec {
-            BodySpec::Fixed(_) => &[],
-            BodySpec::DerivedOffer { obs, .. } | BodySpec::DerivedUse { obs, .. } => obs,
+    pub const fn is_derived(&self) -> bool {
+        match &self.body {
+            Body::Offer(sp) => sp.is_derived(),
+            Body::Use(sp) => sp.is_derived(),
         }
+    }
+
+    /// Iterates over the canonical deduplicated [`Obs`] entries for this promise
+    /// (empty for static promises).
+    pub fn obs(&self) -> impl Iterator<Item = &Obs<P>> {
+        let set = match &self.body {
+            Body::Offer(Spec::Derived { obs, .. }) | Body::Use(Spec::Derived { obs, .. }) => {
+                Some(obs)
+            }
+            Body::Offer(Spec::Fixed(_)) | Body::Use(Spec::Fixed(_)) => None,
+        };
+        set.into_iter().flat_map(BTreeSet::iter)
     }
 }
 
@@ -559,9 +622,11 @@ pub struct IncompleteInfoWarning<A, P> {
     pub blind_target: A,
 }
 
-/// Static diagnostic warning emitted by [`PromiseSystem::lint`] for conditions
-/// or observations that are syntactically well-typed yet structurally vacuous,
-/// unsatisfiable, or scope-incomplete.
+/// Static diagnostic warning emitted by [`PromiseSystem::lint`].
+///
+/// Reports conditions, observations, or targets that are syntactically well-typed
+/// yet structurally vacuous, blocked by an opaque boundary, unsatisfiable, or
+/// scope-incomplete.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConditionWarning<A, P> {
     /// Condition or observation references a promise identifier not registered in the system.
@@ -605,17 +670,37 @@ pub enum ConditionWarning<A, P> {
         /// Actual promiser of `referenced`.
         actual_promiser: A,
     },
-    /// `Assisted` or `Accepted` requires more partners than can statically bind
-    /// (permanently null-potent in Bergstra–Burgess Promise Theory).
+    /// `Interior` references a descendant hidden behind an intermediate opaque superagent wall
+    /// (structurally blocked by recursive Law II encapsulation).
+    OpaqueWallBlocked {
+        /// Enclosing superagent promise attempting to look past an inner opaque boundary.
+        promise: P,
+        /// Referenced descendant promise identifier.
+        referenced: P,
+        /// Enclosing superagent promiser.
+        superagent: A,
+        /// Actual promiser hidden behind an inner opaque superagent.
+        target_promiser: A,
+    },
+    /// `Assisted`, `Accepted`, or `AtLeast(k, cs)` requires more partners or sub-conditions
+    /// than can statically succeed (permanently null-potent in Bergstra–Burgess Promise Theory).
     UnsatisfiableMinCount {
         /// Promise containing the unsatisfiable bound.
         promise: P,
-        /// Referenced `Use` (for `Assisted`) or `Offer` (for `Accepted`).
-        referenced: P,
-        /// Minimum number of providers/acceptors required.
+        /// Referenced `Use`/`Offer` for `Assisted`/`Accepted`, or `None` for `AtLeast(k, cs)`.
+        referenced: Option<P>,
+        /// Minimum count `k` required.
         required: usize,
-        /// Maximum number of statically bindable partners in the system.
+        /// Maximum statically achievable count (`may_bind` partners or `cs.len()`).
         max_possible: usize,
+    },
+    /// Explicit `AgentSet::Set` target names an agent not registered anywhere in the system
+    /// (commonly a typo that silently prevents binding).
+    UnknownTargetAgent {
+        /// Promise carrying the unregistered target agent.
+        promise: P,
+        /// Unregistered target agent identifier.
+        target: A,
     },
     /// Incomplete promise information: a target cannot observe a surface dependency.
     IncompleteInformation(IncompleteInfoWarning<A, P>),
@@ -713,6 +798,15 @@ impl<A, P: Ord, D: BodyAlgebra> Resolved<A, P, D> {
     /// Iterates over the identifiers of all quenched promises in ascending order.
     pub fn quenched_ids(&self) -> impl Iterator<Item = &P> {
         self.bodies.keys()
+    }
+
+    /// Returns the resolved [`Body`] (`Offer` or `Use`) of quenched promise `id`, if active.
+    #[must_use]
+    pub fn body<Q: ?Sized + Ord>(&self, id: &Q) -> Option<&AlgebraBody<D>>
+    where
+        P: Borrow<Q>,
+    {
+        self.bodies.get(id)
     }
 
     /// Returns the resolved offer body of quenched offer `id`, if active.

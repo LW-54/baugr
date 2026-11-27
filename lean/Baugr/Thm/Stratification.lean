@@ -20,28 +20,50 @@ theorem checkValidStratification_sound {A P O U M : Type} [DecidableEq A] [Decid
   cases strict <;> simp_all
 
 theorem obsDeps_strict {A P O U M : Type} [DecidableEq A] [DecidableEq P]
-    (sys : PromiseSystem A P O U M) (obs : List (Obs P)) (d : P) (strict : Bool)
-    (h : (d, strict) ∈ obsDeps sys obs) :
+    (sys : PromiseSystem A P O U M) (me : A) (obs : List (Obs P)) (d : P) (strict : Bool)
+    (h : (d, strict) ∈ obsDeps sys me obs) :
     strict = true := by
   simp only [obsDeps, List.mem_flatMap] at h
   obtain ⟨o, _, ho⟩ := h
   cases o with
-  | selfPromise q => simp [obsEntryDeps] at ho; exact ho.2
-  | interior q    => simp [obsEntryDeps] at ho; exact ho.2
-  | assisted u    =>
+  | selfPromise q =>
+    simp only [obsEntryDeps] at ho
+    cases hfq : sys.find? q with
+    | none => simp [hfq] at ho
+    | some pq =>
+      simp only [hfq] at ho
+      split at ho
+      · simp at ho; exact ho.2
+      · simp at ho
+  | interior q =>
+    simp only [obsEntryDeps] at ho
+    cases hfq : sys.find? q with
+    | none => simp [hfq] at ho
+    | some pq =>
+      simp only [hfq] at ho
+      split at ho
+      · simp at ho; exact ho.2
+      · simp at ho
+  | assisted u =>
     simp only [obsEntryDeps] at ho
     cases hfu : sys.find? u with
-    | none => simp [hfu] at ho; exact ho.2
+    | none => simp [hfu] at ho
     | some pu =>
-      simp only [hfu, List.mem_cons, List.mem_map, Prod.mk.injEq] at ho
-      rcases ho with ⟨_, hs⟩ | ⟨po, _, _, hs⟩ <;> simp_all
-  | accepted o    =>
+      simp only [hfu] at ho
+      split at ho
+      · simp only [List.mem_cons, List.mem_map, Prod.mk.injEq] at ho
+        rcases ho with ⟨_, hs⟩ | ⟨po, _, _, hs⟩ <;> simp_all
+      · simp at ho
+  | accepted o =>
     simp only [obsEntryDeps] at ho
     cases hfo : sys.find? o with
-    | none => simp [hfo] at ho; exact ho.2
+    | none => simp [hfo] at ho
     | some po =>
-      simp only [hfo, List.mem_cons, List.mem_map, Prod.mk.injEq] at ho
-      rcases ho with ⟨_, hs⟩ | ⟨pu, _, _, hs⟩ <;> simp_all
+      simp only [hfo] at ho
+      split at ho
+      · simp only [List.mem_cons, List.mem_map, Prod.mk.injEq] at ho
+        rcases ho with ⟨_, hs⟩ | ⟨pu, _, _, hs⟩ <;> simp_all
+      · simp at ho
 
 -- ----------------------------------------------------------------------------
 -- Stratum monotonicity, invariants, and exact finite convergence (≤ |P| + 1 steps)
@@ -87,7 +109,7 @@ theorem stratumStep_mono {A P O U M : Type} [DecidableEq A] [DecidableEq P]
           simp only [hc2, ↓reduceIte]
           have hr : evalRule sys α S₁ pr = evalRule sys α S₂ pr :=
             evalRule_local sys α α S₁ S₂ pr (fun d strict hdep _ => by
-              have htr := obsDeps_strict sys pr.spec.obs d strict hdep
+              have htr := obsDeps_strict sys pr.promiser pr.obs d strict hdep
               have hst := hv pr hmem d strict (List.mem_append_right _ hdep)
               rw [htr] at hst
               simp only [↓reduceIte] at hst
@@ -440,7 +462,7 @@ private theorem evalStratified_le_of_cone {A P O U M : Type} [DecidableEq A] [De
             · split at hx
               · have hev_r : evalRule sys α G prx = evalRule sys α base prx :=
                   evalRule_local sys α α G base prx (fun d strict hdep _ => by
-                    have htr := obsDeps_strict sys prx.spec.obs d strict hdep
+                    have htr := obsDeps_strict sys prx.promiser prx.obs d strict hdep
                     have hst := hv₁ prx hmem_x d strict (List.mem_append_right _ hdep)
                     rw [hid_x, hxs, htr] at hst
                     simp only [↓reduceIte] at hst

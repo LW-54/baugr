@@ -27,23 +27,27 @@ import Baugr
 #print axioms Baugr.evalStratified_fixed_point
 #print axioms Baugr.stratification_independent
 
--- T4: Axiom of Autonomy (Conditions + Derived Observations + Value Bodies)
+-- T4: Axiom of Autonomy (Unconditional External Offer/Imposition Inertness)
 #print axioms Baugr.autonomy_unaccepted_offer_inert
 
 -- T5d & T6: Canonical Functor Φ & Reverse Light Cone Perturbation Containment (Value Bodies)
 #print axioms Baugr.projectSst_wellFormed
 #print axioms Baugr.perturbation_in_reverse_cone
 
--- T7: Opaque Superagent Encapsulation
+-- T7: Opaque Superagent Encapsulation & Topological Event-Horizon Vertex-Cut Theorem
+#print axioms Baugr.noOpaqueWall_refl
 #print axioms Baugr.noOpaqueWall_symm
 #print axioms Baugr.opaque_non_piercing
 #print axioms Baugr.opaque_non_piercing_inward
 #print axioms Baugr.opaque_interior_perturbation_contained
+#print axioms Baugr.opaque_no_direct_causal_crossing
+#print axioms Baugr.opaque_event_horizon_cut
 
--- T8: Monoidal Valency, Composable ScopeLaws & Universal Static Discharge
+-- T8: Monoidal Valency (`Cap R`), Grouped Budgets, Composable ScopeLaws & Universal Static Discharge
 #print axioms Baugr.valency_withdrawal_safe
 #print axioms Baugr.allLaws_cons
-#print axioms Baugr.activeBindings_subset_staticMax
+#print axioms Baugr.activeBindings_sublist_staticMax
 #print axioms Baugr.static_discharge_universal
+#print axioms Baugr.budget_downward_closed
 #print axioms Baugr.disjoint_downward_closed
 #print axioms Baugr.agreement_downward_closed

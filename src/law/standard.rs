@@ -1,6 +1,8 @@
-//! Reusable standard [`ScopeLaw`] instances: single-offer valency, grouped
-//! cross-offer/scope monoidal budgets, consumer quorum, unique provider,
-//! pairwise disjointness, and grouped coordination `C(b)`.
+//! Four orthogonal standard [`ScopeLaw`] instances:
+//! 1. [`BudgetBy`] — monoidal resource upper bounds (`DownwardClosedLaw`, subsumes single-offer valency & `Cap<R>`)
+//! 2. [`DisjointBy`] — pairwise key uniqueness (`DownwardClosedLaw`)
+//! 3. [`AgreementBy`] — Burgess grouped coordination `C(b)` (`DownwardClosedLaw`)
+//! 4. [`CardinalityBy`] — group binding count intervals `[min, max]` (quorums, unique providers, replica ranges)
 
 use alloc::collections::BTreeMap;
 use core::fmt;
@@ -9,80 +11,14 @@ use core::marker::PhantomData;
 use crate::promise::{Binding, BodyAlgebra, PromiseSystem};
 
 use super::monoid::ResourceMonoid;
-use super::{ResolutionView, ScopeLaw};
+use super::{DownwardClosedLaw, ResolutionView, ScopeLaw};
 
 // ----------------------------------------------------------------------------
-// Standard Law 1a: Single-Offer Promise Valency (`+b#C`)
-// ----------------------------------------------------------------------------
-
-/// Violation returned when aggregate bound demand exceeds an offer's valency capacity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ValencyDeficit<P, R> {
-    /// Over-committed offer identifier.
-    pub offer_id: P,
-    /// Aggregate demand across all active bindings.
-    pub used: R,
-    /// Declared offer capacity.
-    pub capacity: R,
-}
-
-impl<P: fmt::Debug, R: fmt::Debug> fmt::Display for ValencyDeficit<P, R> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "valency deficit on offer {:?}: used {:?} exceeds capacity {:?}",
-            self.offer_id, self.used, self.capacity
-        )
-    }
-}
-
-impl<P: fmt::Debug, R: fmt::Debug> core::error::Error for ValencyDeficit<P, R> {}
-
-/// Single-offer Promise Valency Law (`+b#C`, `arXiv:1505.01716v1` §2.7).
-#[derive(Clone, Debug)]
-pub struct ValencyLaw<P, R, F> {
-    /// Offer promise identifier whose capacity is bounded.
-    pub offer_id: P,
-    /// Maximum capacity in `R`.
-    pub capacity: R,
-    /// Extractor mapping each active binding on `offer_id` to its demand in `R`.
-    pub weight: F,
-}
-
-impl<A, P, D, Rule, R, F> ScopeLaw<A, P, D, Rule> for ValencyLaw<P, R, F>
-where
-    P: Eq + Clone,
-    D: BodyAlgebra,
-    R: ResourceMonoid,
-    F: Fn(&Binding<A, P, D::Overlap>) -> R,
-{
-    type Error = ValencyDeficit<P, R>;
-
-    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
-        let mut used = R::zero();
-        for b in &view.resolved.bindings {
-            if b.offer_id == self.offer_id {
-                used = used.add(&(self.weight)(b));
-            }
-        }
-        if used.le(&self.capacity) {
-            Ok(())
-        } else {
-            Err(ValencyDeficit {
-                offer_id: self.offer_id.clone(),
-                used,
-                capacity: self.capacity.clone(),
-            })
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------
-// Standard Law 1b: Generalized Grouped Monoidal Budget (`BudgetBy`)
+// Standard Law 1: Grouped Monoidal Budget (`BudgetBy` — subsumes Valency `+b#C`)
 // ----------------------------------------------------------------------------
 
 /// Violation returned when aggregate bound demand across a resource group
-/// (e.g., an agent's shared RAM pool, a battery bank's total grants, or a host's CPU)
+/// (a single offer, an agent's shared pool, or a host's multi-dimensional CPU/RAM)
 /// exceeds that group's capacity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetDeficit<G, R> {
@@ -106,12 +42,16 @@ impl<G: fmt::Debug, R: fmt::Debug> fmt::Display for BudgetDeficit<G, R> {
 
 impl<G: fmt::Debug, R: fmt::Debug> core::error::Error for BudgetDeficit<G, R> {}
 
-/// Generalized grouped monoidal budget law: maps each binding to `Option<(group, demand)>`,
-/// sums demands per group in any [`ResourceMonoid`] `R`, and checks each group against
-/// `capacity(&group)` in a single pass.
+/// Generalized grouped monoidal budget law across arbitrary binding groups.
 ///
-/// Unifies single-offer valency (`group = b.offer_id`), cross-offer per-agent shared pools
-/// (`group = b.promiser`), and per-host / per-superagent multi-dimensional budgets.
+/// Maps each binding to `Option<(group, demand)>`, sums demands per group in any
+/// [`ResourceMonoid`] `R` (including [`crate::Cap`] and multi-dimensional tuples
+/// `(R1, R2)`), and checks each group against `capacity(&group)` in one pass.
+///
+/// Unifies single-offer Promise Valency (`+b#C`, `group = b.offer_id`), cross-offer
+/// per-agent shared pools (`group = b.promiser`), and heterogeneous `#1` / `#n` / `#∞`
+/// fleet budgets via [`crate::Cap`]. Verified downward-closed in Lean 4
+/// (`budget_downward_closed`).
 pub struct BudgetBy<G, R, F, C> {
     /// Extractor returning `Some((group, demand))` for bindings charged to a budget.
     pub extract: F,
@@ -185,119 +125,18 @@ where
     }
 }
 
-// ----------------------------------------------------------------------------
-// Standard Law 2: Consumer Quorum (`k`-of-`n`)
-// ----------------------------------------------------------------------------
-
-/// Violation returned when a `Use` promise has fewer active bindings than required.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QuorumShortfall<P> {
-    /// Consumer `Use` promise identifier.
-    pub use_id: P,
-    /// Minimum required active providers.
-    pub required: usize,
-    /// Actual active providers bound.
-    pub actual: usize,
-}
-
-impl<P: fmt::Debug> fmt::Display for QuorumShortfall<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "quorum shortfall on use {:?}: bound {} < required {}",
-            self.use_id, self.actual, self.required
-        )
-    }
-}
-
-impl<P: fmt::Debug> core::error::Error for QuorumShortfall<P> {}
-
-/// Requires at least `min_providers` active bindings for `use_id`.
-#[derive(Clone, Debug)]
-pub struct QuorumLaw<P> {
-    /// Consumer `Use` promise identifier.
-    pub use_id: P,
-    /// Minimum required active bindings.
-    pub min_providers: usize,
-}
-
-impl<A, P: Eq + Clone, D: BodyAlgebra, Rule> ScopeLaw<A, P, D, Rule> for QuorumLaw<P> {
-    type Error = QuorumShortfall<P>;
-
-    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
-        let actual = view
-            .resolved
-            .bindings
-            .iter()
-            .filter(|b| b.use_id == self.use_id)
-            .count();
-        if actual >= self.min_providers {
-            Ok(())
-        } else {
-            Err(QuorumShortfall {
-                use_id: self.use_id.clone(),
-                required: self.min_providers,
-                actual,
-            })
-        }
-    }
+impl<A, P, D, Rule, G, R, F, C> DownwardClosedLaw<A, P, D, Rule> for BudgetBy<G, R, F, C>
+where
+    D: BodyAlgebra,
+    G: Ord + Clone,
+    R: ResourceMonoid,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<(G, R)>,
+    C: Fn(&G) -> R,
+{
 }
 
 // ----------------------------------------------------------------------------
-// Standard Law 3: Unique Provider (`Exact(1)`)
-// ----------------------------------------------------------------------------
-
-/// Violation returned when a consumer `Use` promise is bound to 0 or >1 offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderCardinalityError<P> {
-    /// Consumer `Use` promise identifier.
-    pub use_id: P,
-    /// Actual number of bound offers (expected exactly `1`).
-    pub actual: usize,
-}
-
-impl<P: fmt::Debug> fmt::Display for ProviderCardinalityError<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "unique provider violation on use {:?}: expected 1, found {}",
-            self.use_id, self.actual
-        )
-    }
-}
-
-impl<P: fmt::Debug> core::error::Error for ProviderCardinalityError<P> {}
-
-/// Requires exactly one unambiguous active offer binding for `use_id`.
-#[derive(Clone, Debug)]
-pub struct UniqueProviderLaw<P> {
-    /// Consumer `Use` promise identifier.
-    pub use_id: P,
-}
-
-impl<A, P: Eq + Clone, D: BodyAlgebra, Rule> ScopeLaw<A, P, D, Rule> for UniqueProviderLaw<P> {
-    type Error = ProviderCardinalityError<P>;
-
-    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
-        let actual = view
-            .resolved
-            .bindings
-            .iter()
-            .filter(|b| b.use_id == self.use_id)
-            .count();
-        if actual == 1 {
-            Ok(())
-        } else {
-            Err(ProviderCardinalityError {
-                use_id: self.use_id.clone(),
-                actual,
-            })
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------
-// Standard Law 4: Pairwise Disjointness (`DisjointBy`)
+// Standard Law 2: Pairwise Disjointness (`DisjointBy`)
 // ----------------------------------------------------------------------------
 
 /// Violation returned when two active bindings collide on a partition key.
@@ -327,6 +166,7 @@ impl<K: fmt::Debug, P: fmt::Debug> core::error::Error for DisjointViolation<K, P
 ///
 /// Returning a composite key such as `Some((host, port))` checks per-scope
 /// disjointness across *all* superagents simultaneously in a single pass.
+/// Verified downward-closed in Lean 4 (`disjoint_downward_closed`).
 pub struct DisjointBy<K, F> {
     /// Key extractor returning `Some(key)` for bindings subject to uniqueness.
     pub key: F,
@@ -388,8 +228,17 @@ where
     }
 }
 
+impl<A, P, D, Rule, K, F> DownwardClosedLaw<A, P, D, Rule> for DisjointBy<K, F>
+where
+    P: Clone,
+    D: BodyAlgebra,
+    K: Ord + Clone,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<K>,
+{
+}
+
 // ----------------------------------------------------------------------------
-// Standard Law 5: Burgess Grouped Coordination / Agreement `C(b)`
+// Standard Law 3: Burgess Grouped Coordination / Agreement `C(b)`
 // ----------------------------------------------------------------------------
 
 /// Violation returned when two bindings in the same coordination group disagree on a value.
@@ -431,6 +280,7 @@ impl<G: fmt::Debug, V: fmt::Debug, P: fmt::Debug> core::error::Error
 ///
 /// Use `G = ()` for global agreement, or a superagent/cluster ID to verify
 /// per-cluster coordination across the entire system in one pass.
+/// Verified downward-closed in Lean 4 (`agreement_downward_closed`).
 pub struct AgreementBy<G, V, F> {
     /// Extractor returning `Some((group, value))` for participating bindings.
     pub extract: F,
@@ -493,6 +343,132 @@ where
                 } else {
                     expected.insert(group, (value, pair));
                 }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<A, P, D, Rule, G, V, F> DownwardClosedLaw<A, P, D, Rule> for AgreementBy<G, V, F>
+where
+    P: Clone,
+    D: BodyAlgebra,
+    G: Ord + Clone,
+    V: Eq + Clone,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<(G, V)>,
+{
+}
+
+// ----------------------------------------------------------------------------
+// Standard Law 4: Grouped Cardinality Intervals (`CardinalityBy` — quorums, unique, ranges)
+// ----------------------------------------------------------------------------
+
+/// Violation returned when a group's active binding count falls outside `[min, max]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardinalityViolation<G> {
+    /// Group whose active binding count violated its bounds.
+    pub group: G,
+    /// Observed active binding count for `group`.
+    pub actual: usize,
+    /// Inclusive lower bound required.
+    pub min: usize,
+    /// Optional inclusive upper bound (`None` means unbounded above).
+    pub max: Option<usize>,
+}
+
+impl<G: fmt::Debug> fmt::Display for CardinalityViolation<G> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.max {
+            Some(hi) => write!(
+                f,
+                "cardinality violation on group {:?}: actual {} outside [{}..={}]",
+                self.group, self.actual, self.min, hi
+            ),
+            None => write!(
+                f,
+                "cardinality violation on group {:?}: actual {} < min {}",
+                self.group, self.actual, self.min
+            ),
+        }
+    }
+}
+
+impl<G: fmt::Debug> core::error::Error for CardinalityViolation<G> {}
+
+/// Fleet-wide grouped binding-count interval law `[min, max]` per declared group.
+///
+/// Unifies consumer quorums (`min = k, max = None`), unique provider checks
+/// (`min = 1, max = Some(1)`), and multi-service replica bounds (`[2, 5]`) in a
+/// single pass—explicitly checking declared groups even when they have `0` bindings.
+///
+/// Intentionally does **not** implement [`DownwardClosedLaw`]: lower bounds (`min >= 1`)
+/// are upward-closed and therefore cannot be soundly discharged on `B_max(S)`.
+pub struct CardinalityBy<G, F> {
+    /// Declared groups and their inclusive `(min, max)` binding-count bounds.
+    pub bounds: BTreeMap<G, (usize, Option<usize>)>,
+    /// Extractor mapping each active binding to the group it counts toward.
+    pub group: F,
+}
+
+impl<G, F> CardinalityBy<G, F> {
+    /// Constructs a new [`CardinalityBy`] law from an explicit map of `(group -> (min, max))`
+    /// and a binding-to-group extractor.
+    #[must_use]
+    pub fn new(bounds: impl IntoIterator<Item = (G, usize, Option<usize>)>, group: F) -> Self
+    where
+        G: Ord,
+    {
+        let map = bounds
+            .into_iter()
+            .map(|(g, min, max)| (g, (min, max)))
+            .collect();
+        Self { bounds: map, group }
+    }
+}
+
+impl<G: Clone, F: Clone> Clone for CardinalityBy<G, F> {
+    fn clone(&self) -> Self {
+        Self {
+            bounds: self.bounds.clone(),
+            group: self.group.clone(),
+        }
+    }
+}
+
+impl<G: fmt::Debug, F: fmt::Debug> fmt::Debug for CardinalityBy<G, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CardinalityBy")
+            .field("bounds", &self.bounds)
+            .field("group", &self.group)
+            .finish()
+    }
+}
+
+impl<A, P, D, Rule, G, F> ScopeLaw<A, P, D, Rule> for CardinalityBy<G, F>
+where
+    D: BodyAlgebra,
+    G: Ord + Clone,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<G>,
+{
+    type Error = CardinalityViolation<G>;
+
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
+        let mut counts: BTreeMap<G, usize> = BTreeMap::new();
+        for b in &view.resolved.bindings {
+            if let Some(g) = (self.group)(view.system, b) {
+                let entry = counts.entry(g).or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
+        }
+        for (group, &(min, max)) in &self.bounds {
+            let actual = counts.get(group).copied().unwrap_or(0);
+            if actual < min || max.is_some_and(|hi| actual > hi) {
+                return Err(CardinalityViolation {
+                    group: group.clone(),
+                    actual,
+                    min,
+                    max,
+                });
             }
         }
         Ok(())

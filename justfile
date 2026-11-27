@@ -10,7 +10,7 @@ test:
     RUSTDOCFLAGS="--deny warnings" cargo doc --no-deps
     cargo test
 
-# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 33 audited theorems
+# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 37 audited theorems
 lean:
     cd lean && lake build Baugr baugr-oracle && lake env lean Baugr/Audit.lean
 

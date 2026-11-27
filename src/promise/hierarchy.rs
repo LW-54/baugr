@@ -4,7 +4,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt;
 
-/// Error returned when a superagent containment operation would introduce a cycle.
+/// Error returned when a superagent containment operation violates the strict tree/forest invariant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HierarchyError<A> {
     /// An agent cannot contain itself.
@@ -17,6 +17,15 @@ pub enum HierarchyError<A> {
         /// Intended child that already contains `superagent`.
         child: A,
     },
+    /// `child` is already contained inside a different superagent (preventing silent reparenting).
+    AlreadyContained {
+        /// Agent already belonging to another superagent.
+        child: A,
+        /// Currently registered containing superagent.
+        existing_parent: A,
+        /// Attempted conflicting superagent.
+        attempted_parent: A,
+    },
 }
 
 impl<A: fmt::Debug> fmt::Display for HierarchyError<A> {
@@ -26,6 +35,14 @@ impl<A: fmt::Debug> fmt::Display for HierarchyError<A> {
             Self::Cycle { superagent, child } => write!(
                 f,
                 "containment cycle: placing {child:?} inside {superagent:?} closes a cycle"
+            ),
+            Self::AlreadyContained {
+                child,
+                existing_parent,
+                attempted_parent,
+            } => write!(
+                f,
+                "agent {child:?} is already contained in {existing_parent:?}, cannot reparent into {attempted_parent:?}"
             ),
         }
     }
@@ -69,6 +86,16 @@ impl<A: Ord + Clone> Hierarchy<A> {
         }
         if self.is_strict_ancestor(&child, &superagent) {
             return Err(HierarchyError::Cycle { superagent, child });
+        }
+        if let Some(existing) = self.parent.get(&child) {
+            if existing == &superagent {
+                return Ok(());
+            }
+            return Err(HierarchyError::AlreadyContained {
+                child,
+                existing_parent: existing.clone(),
+                attempted_parent: superagent,
+            });
         }
         self.agents.insert(superagent.clone());
         self.agents.insert(child.clone());
@@ -115,5 +142,11 @@ impl<A: Ord + Clone> Hierarchy<A> {
             }
         }
         true
+    }
+
+    /// Direct visible interior relation: `me` strictly contains `sub` with NO intermediate
+    /// opaque superagent wall separating them (enforces recursive Russian-doll Law II).
+    pub fn visible_interior(&self, me: &A, sub: &A) -> bool {
+        self.is_strict_ancestor(me, sub) && self.no_opaque_wall(me, sub)
     }
 }

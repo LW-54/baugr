@@ -1,86 +1,30 @@
 //! [`PromiseSystem`] builder, precomputed static compatibility index,
-//! dependency extraction, complete-information diagnostics, and static upper bound.
+//! autonomy- & boundary-guarded dependency extraction, complete static linting,
+//! and type-safe static upper-bound construction.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::fmt;
 
+use crate::law::StaticUpperBound;
+
 use super::cond::{Cond, Obs};
 use super::hierarchy::{Hierarchy, HierarchyError};
 use super::{
-    AlgebraPromise, Binding, Body, BodyAlgebra, BodySpec, ConditionWarning, IncompleteInfoWarning,
-    Promise, PromiseMap, Resolved,
+    AgentSet, AlgebraPromise, Binding, Body, BodyAlgebra, ConditionWarning, DeriveAlgebra,
+    IncompleteInfoWarning, Promise, PromiseMap, Resolved, Spec,
 };
 
 /// Precomputed conservative static offer↔use compatibility index for a [`PromiseSystem`].
 ///
 /// For static offer–use pairs, checks exact [`BodyAlgebra::overlap`]; when either
-/// endpoint is value-derived, checks structural compatibility (polarity, targeting,
-/// scope visibility, and opaque boundaries) and evaluates exact `overlap` at runtime.
+/// endpoint is value-derived, checks structural compatibility plus [`DeriveAlgebra::may_overlap`]
+/// and evaluates exact `overlap` at runtime.
 pub struct CompatIndex<P> {
     pub offers_for_use: BTreeMap<P, Vec<P>>,
     pub uses_for_offer: BTreeMap<P, Vec<P>>,
     pub visible_uses_for_offer: BTreeMap<P, Vec<P>>,
-}
-
-impl<P: Ord + Clone> CompatIndex<P> {
-    pub fn cond_deps(&self, neg: bool, cond: &Cond<P>, out: &mut Vec<(P, bool)>) {
-        match cond {
-            Cond::SelfPromise(q) | Cond::Interior(q) => out.push((q.clone(), neg)),
-            Cond::Assisted { use_id, .. } => {
-                out.push((use_id.clone(), neg));
-                if let Some(offers) = self.offers_for_use.get(use_id) {
-                    for oid in offers {
-                        out.push((oid.clone(), neg));
-                    }
-                }
-            }
-            Cond::Accepted { offer_id, .. } => {
-                out.push((offer_id.clone(), neg));
-                if let Some(uses) = self.visible_uses_for_offer.get(offer_id) {
-                    for uid in uses {
-                        out.push((uid.clone(), neg));
-                    }
-                }
-            }
-            Cond::AtLeast(_, cs) => {
-                for c in cs {
-                    self.cond_deps(neg, c, out);
-                }
-            }
-            Cond::Not(c) => self.cond_deps(!neg, c, out),
-        }
-    }
-
-    pub fn obs_deps(&self, obs: &[Obs<P>], out: &mut Vec<(P, bool)>) {
-        for o in obs {
-            match o {
-                Obs::SelfPromise(q) | Obs::Interior(q) => out.push((q.clone(), true)),
-                Obs::Assisted(use_id) => {
-                    out.push((use_id.clone(), true));
-                    if let Some(offers) = self.offers_for_use.get(use_id) {
-                        for oid in offers {
-                            out.push((oid.clone(), true));
-                        }
-                    }
-                }
-                Obs::Accepted(offer_id) => {
-                    out.push((offer_id.clone(), true));
-                    if let Some(uses) = self.visible_uses_for_offer.get(offer_id) {
-                        for uid in uses {
-                            out.push((uid.clone(), true));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn promise_deps(&self, cond: &Cond<P>, obs: &[Obs<P>], out: &mut Vec<(P, bool)>) {
-        self.cond_deps(false, cond, out);
-        self.obs_deps(obs, out);
-    }
 }
 
 /// Complete autonomous agent & conditional promise system.
@@ -142,30 +86,73 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D, Infa
     /// Computes the maximal static upper-bound binding view `B_max(S)` across all
     /// statically compatible offer–use pairs (ignoring conditions and `α`).
     ///
-    /// By Lean 4 theorem `static_discharge_universal`, any downward-closed [`crate::ScopeLaw`]
-    /// (such as [`crate::ValencyLaw`], [`crate::BudgetBy`], [`crate::DisjointBy`], or
-    /// [`crate::AgreementBy`]) that passes on this upper bound is mathematically guaranteed
-    /// to hold under **every** possible runtime assessment `α` (including blackout failovers).
+    /// Returns a type-safe [`StaticUpperBound`] whose `.discharge(&law)` method accepts
+    /// **only** [`crate::DownwardClosedLaw`]s (`BudgetBy`, `DisjointBy`, `AgreementBy`),
+    /// enforcing the exact precondition of Lean 4 theorem `static_discharge_universal`
+    /// at compile time.
     #[must_use]
-    pub fn static_upper_bound(&self) -> Resolved<A, P, D>
+    pub fn static_upper_bound(&self) -> StaticUpperBound<'_, A, P, D, Infallible>
+    where
+        D::Offer: Clone,
+        D::Use: Clone,
+    {
+        self.build_static_upper_bound()
+    }
+}
+
+impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R> {
+    /// Creates an empty promise system supporting both static promises and value-derived
+    /// conditional promises parameterized by rule type `R`.
+    #[must_use]
+    pub const fn with_rules(algebra: D) -> Self {
+        Self {
+            hierarchy: Hierarchy::new(),
+            promises: BTreeMap::new(),
+            algebra,
+        }
+    }
+
+    /// Attempts to build a type-safe [`StaticUpperBound`] `B_max(S)` for universal static
+    /// discharge. Returns `Some(...)` if every registered promise has a static [`Spec::Fixed`]
+    /// body, or `None` if any promise uses [`Spec::Derived`] (whose runtime overlap cannot be
+    /// statically materialized).
+    #[must_use]
+    pub fn try_static_upper_bound(&self) -> Option<StaticUpperBound<'_, A, P, D, R>>
+    where
+        D::Offer: Clone,
+        D::Use: Clone,
+    {
+        if self.promises.values().any(Promise::is_derived) {
+            return None;
+        }
+        Some(self.build_static_upper_bound())
+    }
+
+    fn build_static_upper_bound(&self) -> StaticUpperBound<'_, A, P, D, R>
     where
         D::Offer: Clone,
         D::Use: Clone,
     {
         let mut bodies = BTreeMap::new();
         for (pid, pr) in &self.promises {
-            if let BodySpec::Fixed(b) = &pr.spec {
-                bodies.insert(pid.clone(), b.clone());
+            match &pr.body {
+                Body::Offer(Spec::Fixed(o)) => {
+                    bodies.insert(pid.clone(), Body::Offer(o.clone()));
+                }
+                Body::Use(Spec::Fixed(u)) => {
+                    bodies.insert(pid.clone(), Body::Use(u.clone()));
+                }
+                _ => {}
             }
         }
 
         let mut bindings = Vec::new();
         for po in self.promises.values() {
-            let BodySpec::Fixed(Body::Offer(ob)) = &po.spec else {
+            let Body::Offer(Spec::Fixed(ob)) = &po.body else {
                 continue;
             };
             for pu in self.promises.values() {
-                let BodySpec::Fixed(Body::Use(ub)) = &pu.spec else {
+                let Body::Use(Spec::Fixed(ub)) = &pu.body else {
                     continue;
                 };
                 if po.target.contains(&pu.promiser)
@@ -185,24 +172,14 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D, Infa
             }
         }
 
-        Resolved {
-            bodies,
-            bindings,
-            strata: BTreeMap::new(),
-        }
-    }
-}
-
-impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R> {
-    /// Creates an empty promise system supporting both static promises and value-derived
-    /// conditional promises parameterized by rule type `R`.
-    #[must_use]
-    pub const fn with_rules(algebra: D) -> Self {
-        Self {
-            hierarchy: Hierarchy::new(),
-            promises: BTreeMap::new(),
-            algebra,
-        }
+        StaticUpperBound::new(
+            self,
+            Resolved {
+                bodies,
+                bindings,
+                strata: BTreeMap::new(),
+            },
+        )
     }
 
     /// Registers an autonomous agent.
@@ -218,9 +195,12 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
 
     /// Places `child` inside `superagent` (`superagent +Contains child`).
     ///
+    /// Idempotent when `child` is already contained in `superagent`.
+    ///
     /// # Errors
-    /// Returns [`HierarchyError::SelfContainment`] if `superagent == child`, or
-    /// [`HierarchyError::Cycle`] if `child` is already an ancestor of `superagent`.
+    /// Returns [`HierarchyError::SelfContainment`] if `superagent == child`,
+    /// [`HierarchyError::AlreadyContained`] if `child` belongs to a different superagent,
+    /// or [`HierarchyError::Cycle`] if `child` is already an ancestor of `superagent`.
     pub fn contain(&mut self, superagent: A, child: A) -> Result<(), HierarchyError<A>> {
         self.hierarchy.contain(superagent, child)
     }
@@ -285,6 +265,70 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
         self.hierarchy.members_of(superagent)
     }
 
+    /// Information Completeness check (`arXiv:1505.01716v1` Def. L475, `arXiv:2606.08552v1` L671):
+    /// flags any conditional or value-derived promise whose target agent lies outside
+    /// the observability scope of one of its surface dependencies (`SelfPromise`,
+    /// `Assisted`, or `Accepted`). Interior dependencies of superagents are intentionally
+    /// exempt so opaque encapsulation (Law II) is respected.
+    #[must_use]
+    pub fn check_complete_information(&self) -> Vec<IncompleteInfoWarning<A, P>> {
+        fn collect_cond_surface<P: Ord + Clone>(c: &Cond<P>, out: &mut BTreeSet<P>) {
+            match c {
+                Cond::SelfPromise(q) => {
+                    out.insert(q.clone());
+                }
+                Cond::Assisted { use_id, .. } => {
+                    out.insert(use_id.clone());
+                }
+                Cond::Accepted { offer_id, .. } => {
+                    out.insert(offer_id.clone());
+                }
+                Cond::AtLeast(_, cs) => {
+                    for x in cs {
+                        collect_cond_surface(x, out);
+                    }
+                }
+                Cond::Not(x) => collect_cond_surface(x, out),
+                Cond::Interior(_) => {}
+            }
+        }
+
+        let mut warnings = Vec::new();
+        for pr in self.promises.values() {
+            let mut deps = BTreeSet::new();
+            collect_cond_surface(&pr.cond, &mut deps);
+            for o in pr.obs() {
+                match o {
+                    Obs::SelfPromise(q) | Obs::Assisted(q) | Obs::Accepted(q) => {
+                        deps.insert(q.clone());
+                    }
+                    Obs::Interior(_) => {}
+                }
+            }
+            for dep_id in deps {
+                if let Some(pdep) = self.promises.get(&dep_id) {
+                    for a in &self.hierarchy.agents {
+                        if pr.target.contains(a) && !pdep.in_scope(a) {
+                            warnings.push(IncompleteInfoWarning {
+                                conditional_promise: pr.id.clone(),
+                                dependency: dep_id.clone(),
+                                blind_target: a.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        warnings
+    }
+}
+
+impl<A, P, D, R> PromiseSystem<A, P, D, R>
+where
+    A: Ord + Clone,
+    P: Ord + Clone,
+    D: DeriveAlgebra<A, P, R>,
+{
     pub(crate) fn may_bind(
         &self,
         po: &Promise<A, P, D::Offer, D::Use, R>,
@@ -299,11 +343,12 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
         {
             return false;
         }
-        match (&po.spec, &pu.spec) {
-            (BodySpec::Fixed(Body::Offer(ob)), BodySpec::Fixed(Body::Use(ub))) => {
+        match (&po.body, &pu.body) {
+            (Body::Offer(Spec::Fixed(ob)), Body::Use(Spec::Fixed(ub))) => {
                 self.algebra.overlap(ob, ub).is_some()
             }
-            _ => true,
+            (Body::Offer(os), Body::Use(us)) => self.algebra.may_overlap(os.as_ref(), us.as_ref()),
+            _ => false,
         }
     }
 
@@ -346,17 +391,147 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
         }
     }
 
-    /// Static diagnostic pass checking every condition formula and value-derivation
-    /// observation for dangling references, autonomy/promiser mismatches, polarity
-    /// mismatches, non-interior superagent references, permanently unsatisfiable
-    /// `Assisted`/`Accepted` minimum counts, and incomplete promise information.
+    pub(crate) fn collect_cond_deps(
+        &self,
+        compat: &CompatIndex<P>,
+        me: &A,
+        neg: bool,
+        cond: &Cond<P>,
+        out: &mut Vec<(P, bool)>,
+    ) {
+        match cond {
+            Cond::SelfPromise(q) => {
+                if self.promises.get(q).is_some_and(|pq| &pq.promiser == me) {
+                    out.push((q.clone(), neg));
+                }
+            }
+            Cond::Interior(q) => {
+                if self
+                    .promises
+                    .get(q)
+                    .is_some_and(|pq| self.hierarchy.visible_interior(me, &pq.promiser))
+                {
+                    out.push((q.clone(), neg));
+                }
+            }
+            Cond::Assisted { use_id, .. } => {
+                if self
+                    .promises
+                    .get(use_id)
+                    .is_some_and(|pu| &pu.promiser == me && pu.is_use())
+                {
+                    out.push((use_id.clone(), neg));
+                    if let Some(offers) = compat.offers_for_use.get(use_id) {
+                        for oid in offers {
+                            out.push((oid.clone(), neg));
+                        }
+                    }
+                }
+            }
+            Cond::Accepted { offer_id, .. } => {
+                if self
+                    .promises
+                    .get(offer_id)
+                    .is_some_and(|po| &po.promiser == me && po.is_offer())
+                {
+                    out.push((offer_id.clone(), neg));
+                    if let Some(uses) = compat.visible_uses_for_offer.get(offer_id) {
+                        for uid in uses {
+                            out.push((uid.clone(), neg));
+                        }
+                    }
+                }
+            }
+            Cond::AtLeast(_, cs) => {
+                for c in cs {
+                    self.collect_cond_deps(compat, me, neg, c, out);
+                }
+            }
+            Cond::Not(c) => self.collect_cond_deps(compat, me, !neg, c, out),
+        }
+    }
+
+    pub(crate) fn collect_promise_deps(
+        &self,
+        compat: &CompatIndex<P>,
+        pr: &Promise<A, P, D::Offer, D::Use, R>,
+        out: &mut Vec<(P, bool)>,
+    ) {
+        self.collect_cond_deps(compat, &pr.promiser, false, &pr.cond, out);
+        for o in pr.obs() {
+            match o {
+                Obs::SelfPromise(q) => {
+                    if self
+                        .promises
+                        .get(q)
+                        .is_some_and(|pq| pq.promiser == pr.promiser)
+                    {
+                        out.push((q.clone(), true));
+                    }
+                }
+                Obs::Interior(q) => {
+                    if self.promises.get(q).is_some_and(|pq| {
+                        self.hierarchy.visible_interior(&pr.promiser, &pq.promiser)
+                    }) {
+                        out.push((q.clone(), true));
+                    }
+                }
+                Obs::Assisted(use_id) => {
+                    if self
+                        .promises
+                        .get(use_id)
+                        .is_some_and(|pu| pu.promiser == pr.promiser && pu.is_use())
+                    {
+                        out.push((use_id.clone(), true));
+                        if let Some(offers) = compat.offers_for_use.get(use_id) {
+                            for oid in offers {
+                                out.push((oid.clone(), true));
+                            }
+                        }
+                    }
+                }
+                Obs::Accepted(offer_id) => {
+                    if self
+                        .promises
+                        .get(offer_id)
+                        .is_some_and(|po| po.promiser == pr.promiser && po.is_offer())
+                    {
+                        out.push((offer_id.clone(), true));
+                        if let Some(uses) = compat.visible_uses_for_offer.get(offer_id) {
+                            for uid in uses {
+                                out.push((uid.clone(), true));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Static diagnostic pass checking every condition formula, value-derivation
+    /// observation, and explicit target for dangling references, autonomy/promiser
+    /// mismatches, polarity mismatches, non-interior or opaque-wall-blocked references,
+    /// permanently unsatisfiable `Assisted`/`Accepted`/`AtLeast` counts, unregistered
+    /// explicit target agents, and incomplete promise information.
     #[must_use]
     pub fn lint(&self) -> Vec<ConditionWarning<A, P>> {
         let compat = self.build_compat_index();
         let mut out = Vec::new();
         for pr in self.promises.values() {
+            if let AgentSet::Set(targets) = &pr.target {
+                for t in targets {
+                    if !self.hierarchy.agents.contains(t) {
+                        out.push(ConditionWarning::UnknownTargetAgent {
+                            promise: pr.id.clone(),
+                            target: t.clone(),
+                        });
+                    }
+                }
+            }
             self.lint_cond(&compat, &pr.id, &pr.promiser, &pr.cond, &mut out);
-            self.lint_obs(&pr.id, &pr.promiser, pr.obs(), &mut out);
+            for o in pr.obs() {
+                self.lint_obs_entry(&pr.id, &pr.promiser, o, &mut out);
+            }
         }
         for w in self.check_complete_information() {
             out.push(ConditionWarning::IncompleteInformation(w));
@@ -383,7 +558,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
                     if max_possible < *min_providers {
                         out.push(ConditionWarning::UnsatisfiableMinCount {
                             promise: pid.clone(),
-                            referenced: use_id.clone(),
+                            referenced: Some(use_id.clone()),
                             required: *min_providers,
                             max_possible,
                         });
@@ -402,7 +577,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
                     if max_possible < *min_acceptors {
                         out.push(ConditionWarning::UnsatisfiableMinCount {
                             promise: pid.clone(),
-                            referenced: offer_id.clone(),
+                            referenced: Some(offer_id.clone()),
                             required: *min_acceptors,
                             max_possible,
                         });
@@ -410,7 +585,15 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
                 }
             }
             Cond::Interior(q) => self.lint_interior_ref(pid, promiser, q, out),
-            Cond::AtLeast(_, cs) => {
+            Cond::AtLeast(k, cs) => {
+                if *k > cs.len() {
+                    out.push(ConditionWarning::UnsatisfiableMinCount {
+                        promise: pid.clone(),
+                        referenced: None,
+                        required: *k,
+                        max_possible: cs.len(),
+                    });
+                }
                 for c in cs {
                     self.lint_cond(compat, pid, promiser, c, out);
                 }
@@ -419,24 +602,22 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
         }
     }
 
-    fn lint_obs(
+    fn lint_obs_entry(
         &self,
         pid: &P,
         promiser: &A,
-        obs: &[Obs<P>],
+        o: &Obs<P>,
         out: &mut Vec<ConditionWarning<A, P>>,
     ) {
-        for o in obs {
-            match o {
-                Obs::SelfPromise(q) => self.lint_self_ref(pid, promiser, q, out),
-                Obs::Assisted(use_id) => {
-                    let _ = self.lint_assisted_ref(pid, promiser, use_id, out);
-                }
-                Obs::Accepted(offer_id) => {
-                    let _ = self.lint_accepted_ref(pid, promiser, offer_id, out);
-                }
-                Obs::Interior(q) => self.lint_interior_ref(pid, promiser, q, out),
+        match o {
+            Obs::SelfPromise(q) => self.lint_self_ref(pid, promiser, q, out),
+            Obs::Assisted(use_id) => {
+                let _ = self.lint_assisted_ref(pid, promiser, use_id, out);
             }
+            Obs::Accepted(offer_id) => {
+                let _ = self.lint_accepted_ref(pid, promiser, offer_id, out);
+            }
+            Obs::Interior(q) => self.lint_interior_ref(pid, promiser, q, out),
         }
     }
 
@@ -552,64 +733,15 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
                     actual_promiser: pq.promiser.clone(),
                 });
             }
+            Some(pq) if !self.hierarchy.no_opaque_wall(promiser, &pq.promiser) => {
+                out.push(ConditionWarning::OpaqueWallBlocked {
+                    promise: pid.clone(),
+                    referenced: q.clone(),
+                    superagent: promiser.clone(),
+                    target_promiser: pq.promiser.clone(),
+                });
+            }
             Some(_) => {}
         }
-    }
-
-    /// Information Completeness check (`arXiv:1505.01716v1` Def. L475, `arXiv:2606.08552v1` L671):
-    /// flags any conditional or value-derived promise whose target agent lies outside
-    /// the observability scope of one of its surface dependencies (`SelfPromise`,
-    /// `Assisted`, or `Accepted`). Interior dependencies of superagents are intentionally
-    /// exempt so opaque encapsulation (Law II) is respected.
-    #[must_use]
-    pub fn check_complete_information(&self) -> Vec<IncompleteInfoWarning<A, P>> {
-        fn collect_cond_surface<P: Ord + Clone>(c: &Cond<P>, out: &mut BTreeSet<P>) {
-            match c {
-                Cond::SelfPromise(q) => {
-                    out.insert(q.clone());
-                }
-                Cond::Assisted { use_id, .. } => {
-                    out.insert(use_id.clone());
-                }
-                Cond::Accepted { offer_id, .. } => {
-                    out.insert(offer_id.clone());
-                }
-                Cond::AtLeast(_, cs) => {
-                    for x in cs {
-                        collect_cond_surface(x, out);
-                    }
-                }
-                Cond::Not(x) => collect_cond_surface(x, out),
-                Cond::Interior(_) => {}
-            }
-        }
-
-        let mut warnings = Vec::new();
-        for pr in self.promises.values() {
-            let mut deps = BTreeSet::new();
-            collect_cond_surface(&pr.cond, &mut deps);
-            for o in pr.obs() {
-                match o {
-                    Obs::SelfPromise(q) | Obs::Assisted(q) | Obs::Accepted(q) => {
-                        deps.insert(q.clone());
-                    }
-                    Obs::Interior(_) => {}
-                }
-            }
-            for dep_id in deps {
-                if let Some(pdep) = self.promises.get(&dep_id) {
-                    for a in &self.hierarchy.agents {
-                        if pr.target.contains(a) && !pdep.in_scope(a) {
-                            warnings.push(IncompleteInfoWarning {
-                                conditional_promise: pr.id.clone(),
-                                dependency: dep_id.clone(),
-                                blind_target: a.clone(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        warnings
     }
 }

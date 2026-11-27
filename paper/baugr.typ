@@ -105,7 +105,7 @@
   #v(0.45em)
   #text(size: 9.8pt, fill: luma(75))[
     Promise Theory, Strict $gamma(3,4)$ Causal Geometry, and Four Universal Laws \
-    `baugr` v0.3 — `https://github.com/LW-54/baugr`
+    `baugr` v0.4 — `https://github.com/LW-54/baugr`
   ]
 ]
 
@@ -123,7 +123,7 @@
   #set text(size: 9.2pt)
   Decentralized systems—from electrical microgrids and fault-tolerant consensus clusters to multi-tenant cloud fabrics—are composed of autonomous actors that cannot coerce one another and rarely agree on a single global view of the world. Yet most formal modeling tools inherit two centralizing fictions: top-down *obligation* (where an environment or authority compels behavior) and *global objective truth* (where every component shares one view of what is working). Conversely, unrestricted rule languages such as raw Datalog can encode decentralized systems, but offer no structural guarantee that a model respects autonomy, abstraction boundaries, or blast-radius locality.
 
-  *Baugr* is a minimal, domain-agnostic mathematical model—and machine-checked formal library—of *voluntary coordination in causal spacetime*, derived directly from the Promise Theory and Semantic Spacetime $gamma(3,4)$ foundations of Jan Bergstra and Mark Burgess. By supporting both boolean conditional promises (`+b | C`) and *value-dependent conditional promises* (`+f(obs) | C`) restricted strictly to four autonomy-grounded local observations—and canonically projecting every promise system into strict Semantic Spacetime (mapping agents to _Things_, promises to _Events_, and intents to _Concepts_)—Baugr turns four foundational guarantees of decentralized engineering into *universal theorems* holding automatically for every expressible system: *Non-Coercion* (unaccepted impositions are inert), *Boundary Integrity* (opaque superagents act as non-piercing event horizons), *Causal Locality* (observer-local failures outside a promise's reverse causal light cone cannot alter its resolved body value, even across failover negation and value derivation), and *Order Independence* (any valid stratification converges finitely to the same canonical value state, proved constructively via spacetime light cones). We further prove *Universal Static Discharge* for downward-closed collective laws, machine-check all 33 theorems in pure Lean 4 (`0 sorryAx`, zero external proof libraries), position Baugr against adjacent formalisms, and realize the calculus as a zero-dependency executable engine mechanically locked to its formal specification.
+  *Baugr* is a minimal, domain-agnostic mathematical model—and machine-checked formal library—of *voluntary coordination in causal spacetime*, derived directly from the Promise Theory and Semantic Spacetime $gamma(3,4)$ foundations of Jan Bergstra and Mark Burgess. By supporting both boolean conditional promises (`+b | C`) and *value-dependent conditional promises* (`+f(obs) | C`) restricted strictly to four autonomy-grounded local observations—and canonically projecting every promise system into strict Semantic Spacetime (mapping agents to _Things_, promises to _Events_, and intents to _Concepts_)—Baugr turns four foundational guarantees of decentralized engineering into *universal theorems* holding automatically for every expressible system: *Non-Coercion* (external unaccepted impositions are unconditionally inert), *Boundary Integrity* (opaque superagents form topological event-horizon vertex cuts across arbitrarily nested hierarchies), *Causal Locality* (observer-local failures outside a promise's reverse causal light cone cannot alter its resolved body value, even across failover negation and value derivation), and *Order Independence* (any valid stratification converges finitely to the same canonical value state, proved constructively via spacetime light cones). We further prove *Universal Static Discharge* for downward-closed collective laws (enforced at compile time via `DownwardClosedLaw`), machine-check all 37 theorems in pure Lean 4 (`0 sorryAx`, zero external proof libraries), position Baugr against adjacent formalisms, and realize the calculus as a zero-dependency executable engine mechanically locked to its formal specification.
 ]
 
 #v(0.45em)
@@ -158,8 +158,8 @@ Baugr takes the opposite approach. Instead of building an unconstrained language
   #set par(justify: false)
   #text(weight: "bold", fill: deep)[The Four Universal Laws of Baugr]
   #v(0.25em)
-  + *Non-Coercion (Autonomy):* Adding an unaccepted offer or imposition can never alter the activation or derived body value of any existing promise—not even indirectly through negation.
-  + *Boundary Integrity (Opaque Encapsulation):* An opaque superagent acts as an event horizon: interior agents cannot bind across its wall, and internal failures cannot leak outside except through explicit surface promises.
+  + *Non-Coercion (Autonomy):* Adding an unaccepted offer or imposition from an external agent can never alter the activation or derived body value of any existing promise—unconditionally, even across negation.
+  + *Boundary Integrity (Event-Horizon Vertex Cut):* An opaque superagent acts as a hermetic event horizon: no binding or `+LeadsTo` causal edge can cross its wall (even from an enclosing parent superagent), and every causal path across it must pass through an explicit surface promise.
   + *Causal Locality (Light-Cone Containment):* No observer-local failure outside a promise's reverse causal light cone $J^-_Phi (pi)$ can change $pi$'s resolved body—even across non-monotonic failover and value-derivation rules.
   + *Order Independence (Canonicality):* Even with nested failover negation and value-derived bodies, every valid stratification converges in at most $|P|+1$ steps to the exact same steady state.
 ]
@@ -178,18 +178,18 @@ Before writing formal definitions, we ground every concept in Baugr using two co
 
 == Example 1: The Autonomous Hospital Microgrid
 
-Consider four independent actors sharing an electrical site: the municipal `mains`, an on-site `battery`, a critical `hospital` ward, and an adjacent `factory`.
+Consider an electrical site shared by independent actors: the municipal `mains`, an on-site backup battery `bank` (an opaque superagent containing three 800 W internal cells), a high-priority `hospital` ward (1000 W), a lower-priority `clinic` (800 W) with a local diesel generator and secondary `aux` supplier, and an adjacent `factory`.
 
-- *Voluntary bilateral alignment (`+` and `-`):* `mains` voluntarily *offers* 230 V power up to 5000 W (`+power`). That offer alone powers nothing; `hospital` must independently declare that it *accepts* 230 V power (`-power`). Cooperation occurs only where an offer and an acceptance meet with compatible physical parameters (matching voltage and overlapping wattage)—a *mutual-information overlap* $b_1 inter b_2$ @burgess2014spacetimes1.
-- *Failover via stratified negation:* `battery` accepts a grid-sensing signal from `mains` (`-sense`), and makes a *conditional* backup offer: _"I offer 230 V backup power (up to 1500 W) *if* my grid-sensing promise is *not* assisted by a working mains offer"_ (`+backup | not assisted(sense)`). When `mains` is healthy, `battery` stays quiet; when `mains` fails, `battery` automatically activates its backup offer, and `hospital` seamlessly binds to it.
-- *Observer-local subjectivity:* Suppose a local breaker trips on the hospital feeder while the industrial feeder stays live. Now `battery` assesses `mains`'s offer as *broken* ($alpha_"battery" ("mains") = bot$), whereas `factory` assesses the *very same* `mains` offer as *kept* ($alpha_"factory" ("mains") = top$). In a single-truth logic this state is contradictory; in Baugr it is ordinary reality. `battery` activates backup power for `hospital`, while `factory` continues reading healthy mains—and crucially, nothing that happens to `factory`'s monitoring can ever perturb `hospital`'s power, because `factory` lies outside `hospital`'s reverse causal light cone.
-- *Resource valency:* Even when `battery` activates, its inverter has a finite budget of 1500 W (`+backup#1500W`). If `hospital` draws 900 W and a secondary clinic draws 800 W, each individual bilateral binding is physically valid, yet the combined load (1700 W) violates `battery`'s *Promise Valency* budget.
+- *Voluntary bilateral alignment (`+` and `-`):* `mains` voluntarily *offers* 230 V power up to 5000 W (`+power`). That offer alone powers nothing; `hospital` must independently declare that it *accepts* 230 V power (`-draw`). Cooperation occurs only where an offer and an acceptance meet with compatible physical parameters (matching voltage and overlapping wattage)—a *mutual-information overlap* $b_1 inter b_2$ @burgess2014spacetimes1.
+- *Failover and autonomous Request–Grant allocation (`+f(obs) | C`):* `bank` accepts a grid-sensing signal (`-sense`) and voluntary power requests (`-recv_req`). When `mains` fails and at least 2 of its 3 interior cells are healthy, `bank` activates via stratified negation (`not assisted(sense)`) and dynamically computes its emergent capacity from the healthy cells (1600 W if one cell crashed; 2400 W if all three live), deriving *separate concrete offers*: `+Power(1000 W)` to `hospital` and the exact leftover `+Power(600 W)` to `clinic`. `clinic` then decides *autonomously* how to respond: a partial clinic accepts 600 W and derives a 200 W residual request to `aux`, whereas a strict clinic (`min 800 W`) rejects 600 W and fires its own `!assisted(draw)` diesel backup.
+- *Observer-local subjectivity:* Suppose a local breaker trips on the hospital feeder while the industrial feeder stays live. Now `bank` assesses `mains`'s offer as *broken* ($alpha_"bank" ("mains") = bot$), whereas `factory` assesses the *very same* `mains` offer as *kept* ($alpha_"factory" ("mains") = top$). In a single-truth logic this state is contradictory; in Baugr it is ordinary reality. `bank` activates backup grants for `hospital` and `clinic`, while `factory` continues reading healthy mains—and crucially, nothing that happens to `factory`'s monitoring can ever perturb `hospital`'s operation, because `factory` lies outside `hospital`'s reverse causal light cone.
+- *Heterogeneous resource valency (`Cap<R>`):* As an independent collective safety net across all offers, grouped monoidal budgets verify that `bank`'s aggregate bound grants stay within its `#1600W` ceiling while `mains` remains unbounded (`#∞`)—checked together in a single homogeneous pass.
 
 == Example 2: The Opaque Consensus Cluster
 
 Now consider a distributed storage service `cluster` built internally from three independent replica nodes $\{n_1, n_2, n_3\}$ serving an external `client` alongside an unrelated `metrics` observer.
 
-- *Opaque boundary:* `cluster` is declared an *opaque superagent* containing $\{n_1, n_2, n_3\}$ @burgess2015spacetimes2. Inside the wall, the replicas freely exchange replication promises with one another. Outside the wall, `client` is structurally prevented from binding directly to replica $n_1$—even if $n_1$ publishes a broad offer and `client` tries to accept it.
+- *Opaque boundary (recursive Russian-doll encapsulation):* `cluster` is declared an *opaque superagent* containing $\{n_1, n_2, n_3\}$ @burgess2015spacetimes2. Inside the wall, the replicas freely exchange replication promises with one another. Outside the wall, `client` is structurally prevented from binding directly to replica $n_1$—and even if `cluster` itself is placed inside an enclosing `datacenter` superagent, `datacenter` may observe `cluster`'s surface promises but cannot pierce `cluster`'s opaque wall to inspect $n_1$.
 - *Irreducible emergence:* No single replica can promise fault-tolerant durability on its own. Instead, `cluster` itself makes a *surface promise* of durable writes (`+durable`) conditioned on *at least 2 of its 3 interior replicas* keeping their internal replication promises (`atLeast(2, [interior(n1), interior(n2), interior(n3)])`).
 - *Absorbing internal churn:* If replica $n_1$ crashes, `cluster` still observes $n_2$ and $n_3$ keeping their promises, so the 2-of-3 quorum holds and `client` observes zero disruption. Even if a fourth internal helper inside `cluster` is unreferenced by the surface promise, its failure is mechanically guaranteed not to cross the opaque boundary.
 
@@ -296,12 +296,12 @@ returning the shared commitment $m in M$ when $o$ and $u$ are compatible, and `n
 
 *Why $+o$ and $-u$ instead of uniform $plus.minus b$?* Classical Promise Theory writes $+b_1$ and $-b_2$ with overlap $b_1 inter b_2$ over a single homogeneous space $B$ of promise bodies. In real engineering domains, however, offers and acceptances frequently have *asymmetric shapes*: in the microgrid, a power source offers a *capacity ceiling* (`230 V, max 5000 W` $in O$), whereas a load requests a *specific draw* (`230 V, need 900 W` $in U$), and their overlap is the *allocated power* (`900 W` $in M$); similarly, a TLS server offers a version *range* while a client states a *minimum requirement*. Separating $(O, U, M)$ accommodates both worlds cleanly: whenever a domain truly is symmetric (e.g., matching capability sets or meet-semilattices), setting $O = U = M = B$ recovers classical $plus.minus b$ and $b_1 inter b_2$ identically.
 
-A directed promise is a six-tuple $pi = ("id", a, T, sigma, beta, C)$ where $a in A$ is the promiser, $T subset.eq A$ is the set of intended *targets* (promisees), $sigma subset.eq A$ is the *visibility scope* (who can observe the promise), $beta$ is a polarity-preserving *body specification*—either a static constant body (`Offer(o)` / `Use(u)`) or a *value-derived body* (`DerivedOffer(obs, f)` / `DerivedUse(obs, f)`, §3.3)—and $C$ is a boolean activation condition. Following @bergstra2008static @bergstra2014impositions, targets and observability scope are kept distinct: an agent may target one recipient while broadcasting visibility to an auditor, or hide a promise from third parties. Every promiser automatically observes its own promises:
+A directed promise is a six-tuple $pi = ("id", a, T, sigma, beta, C)$ where $a in A$ is the promiser, $T subset.eq A$ is the set of intended *targets* (promisees), $sigma subset.eq A$ is the *visibility scope* (who can observe the promise), $beta in "Body"("Spec"(O), "Spec"(U))$ encodes polarity *once* paired orthogonally with either a static constant payload (`Spec::Fixed`) or a *value-derived* payload (`Spec::Derived(obs, f)` over a canonical deduplicated observation set `obs`, §3.3), and $C$ is a boolean activation condition. Following @bergstra2008static @bergstra2014impositions, targets and observability scope are kept distinct: an agent may target one recipient while broadcasting visibility to an auditor, or hide a promise from third parties. Every promiser automatically observes its own promises:
 $ "inScope"(pi, x) quad <=> quad (x = a) or (x in sigma). $
 
 == Superagent Hierarchies and Opaque Event Horizons
 
-Autonomous agents group into recursive *superagents* @burgess2015spacetimes2 (§3.3–3.7). A hierarchy $cal(H) = ("parent", "opaque")$ assigns each agent an optional parent (forming a strict acyclic forest—no agent may contain itself directly or transitively) and marks each superagent either *transparent* (a logical grouping whose interior members remain directly reachable) or *opaque* (an encapsulated unit with a hard boundary).
+Autonomous agents group into recursive *superagents* @burgess2015spacetimes2 (§3.3–3.7). A hierarchy $cal(H) = ("parent", "opaque")$ assigns each agent at most one parent (enforcing a strict acyclic forest with idempotent registration and rejecting silent reparenting or cycles by construction) and marks each superagent either *transparent* (a logical grouping whose interior members remain directly reachable) or *opaque* (an encapsulated unit with a hard boundary).
 
 Write $s #splus a$ if $s$ is a strict ancestor of $a$ in $cal(H)$, and $s prec.eq a$ if $a = s$ or $s #splus a$.
 
@@ -310,11 +310,11 @@ Write $s #splus a$ if $s$ is a strict ancestor of $a$ in $cal(H)$, and $s prec.e
   $ (s #splus a => s prec.eq b) quad and quad (s #splus b => s prec.eq a). $
 ]
 
-This symmetric condition captures an exact physical intuition: agents strictly inside an opaque superagent $s$ may cooperate freely with one another and with $s$'s own boundary, but can never form a direct link to any agent outside $s$.
+This symmetric, reflexive relation captures exact Russian-doll encapsulation: agents strictly inside an opaque superagent $s$ may cooperate freely with one another and with $s$'s own boundary, but can never form a direct link to any agent outside $s$—not even to an enclosing ancestor superagent above $s$.
 
-Combining bilateral targeting, visibility, opaque boundaries, and (for fixed pairs) body overlap yields the conservative static compatibility predicate $"mayBind"(pi_o, pi_u)$ governing stratification and causal projection:
+Combining bilateral targeting, visibility, opaque boundaries, and static body/channel compatibility yields the conservative predicate $"mayBind"(pi_o, pi_u)$ governing stratification and causal projection:
 $ "structBindable"(pi_o, pi_u) quad <=> quad "isOffer"(pi_o) and "isUse"(pi_u) and a_u in T_o and "inScope"(pi_o, a_u) and a_o in T_u and "noOpaqueWall"(a_o, a_u). $
-When both $pi_o$ and $pi_u$ have fixed bodies $(+o, -u)$, $"mayBind"$ additionally checks $o inter u != "none"$; when either endpoint is value-derived, $"mayBind"$ equals $"structBindable"$ and exact $o inter u$ is evaluated at runtime once the derived bodies materialize.
+When both $pi_o$ and $pi_u$ have fixed payloads $(+o, -u)$, $"mayBind"$ checks exact $o inter u != "none"$; when either endpoint is value-derived, $"mayBind"$ consults an optional channel-compatibility filter (`may_overlap` / `ruleCompat`, defaulting to `true`), keeping multi-protocol derived graphs (such as `Request` $arrow.r$ `Grant` $arrow.r$ `Ack`) acyclic and their causal light cones sharp, while runtime overlap always gates on $"mayBind"$ to preserve 100% formal soundness.
 
 == Autonomy-Grounded Conditions and Value-Derived Promises (`+f(obs) | C`)
 
@@ -323,33 +323,33 @@ How may an agent condition a promise—or compute its offered/accepted value—f
 + *Self-reliance* (`Self(q)`): promise $q$ made by *the same agent $a$* is active and locally kept by $a$ ($alpha_a (q) = top$) @burgess2026quantitative.
 + *Assisted reliance* (`Assisted(u, k)` / `Obs::Assisted(u)`): $a$'s own *Use* promise $u$ is active, locally kept ($alpha_a (u) = top$), and compatible with active offers $pi_o$ that $a$ locally assesses as kept ($alpha_a ("id"_o) = top$) @burgess2014spacetimes1.
 + *Voluntary tenancy / acceptance* (`Accepted(o, k)` / `Obs::Accepted(o)`): $a$'s own *Offer* promise $o$ is active, locally kept ($alpha_a (o) = top$), and accepted by active *Use* promises $pi_u$ visible in scope to $a$ and locally assessed kept ($alpha_a ("id"_u) = top$) @burgess2015spacetimes2.
-+ *Superagent interior emergence* (`Interior(q)`): promise $q$ made by a *strict sub-agent* $b$ inside superagent $a$ ($a #splus b$) is active and assessed kept by $a$ ($alpha_a (q) = top$) @burgess2015spacetimes2.
++ *Visible superagent interior emergence* (`Interior(q)`): promise $q$ made by a strict sub-agent $b$ inside superagent $a$ with *no intervening opaque wall* ($a #splus b and "noOpaqueWall"(a, b)$) is active and assessed kept by $a$ ($alpha_a (q) = top$) @burgess2015spacetimes2. Thus an enclosing superagent can inspect transparent sub-groups and an opaque child's *surface*, but can never pierce an inner opaque boundary.
 
 Boolean conditions $C$ combine these four atoms via two combinators: *monotone threshold* `AtLeast(k, [c_1, ..., c_n])` (unifying unconditional promises $k=0$, conjunction $k=n$, disjunction $k=1$, and quorums @burgess2016spacetimes3) and *stratified negation* `not c` (enabling autonomous failover such as `not Assisted(sense, 1)`).
 
-*Value-dependent conditional promises (`+f(obs) | C` and `-f(obs) | C`):* Realizing Burgess's functional tenancy law $+f(C, R) | -R$ @burgess2015spacetimes2 (§4.1), a promise need not emit a hardcoded constant body. A *derived* offer or use declares a finite list `obs` drawn from the exact same four autonomy-grounded selectors and a pure deterministic function $f : "LocalObs" -> "Option"(O)$ (or $"Option"(U)$). Notice what this single primitive unlocks with *zero* special-case scheduling machinery in the kernel:
+*Value-dependent conditional promises (`+f(obs) | C` and `-f(obs) | C`):* Realizing Burgess's functional tenancy law $+f(C, R) | -R$ @burgess2015spacetimes2 (§4.1), a promise need not emit a hardcoded constant body. A *derived* offer or use declares a canonical *deduplicated set* `obs` (preventing double-counting by construction) drawn from the exact same four autonomy-grounded selectors and a pure deterministic function $f : "LocalObs" -> "Option"(O)$ (or $"Option"(U)$). Notice what this single primitive unlocks with *zero* special-case scheduling machinery in the kernel:
 - *Autonomous resource allocation without hidden schedulers:* Consumers voluntarily promise requests (`+Request(watts, priority)`); the provider accepts requests (`-AcceptRequests`) and derives separate concrete grants (`+Grant(1000W)` to `hospital`, leftover `+Grant(600W)` to `clinic`—or proportional shares, FCFS-by-ticket, strict reject-all, or cross-offer RAM budgets); consumers then *freely* accept, partially accept, fail over to local backup, or derive a residual request for the shortfall from a second provider.
-- *Peer-to-peer consumer coordination:* A consumer can derive a `-Use` body directly from a peer's broadcast draw (`min(800, 1500 - hosp_watts)`).
+- *Peer-to-peer consumer coordination:* A consumer can derive a `-Use` body directly from a peer's broadcast draw (`min(800, 1600 - hosp_watts)`).
 - *True emergent superagent capacity:* An opaque battery bank computes its surface wattage dynamically as the sum of its healthy interior cells (`1600 W` with 2 cells, `2400 W` with 3) rather than hardcoding a static constant.
 
 == Observer-Local Assessment and Stratified Value Quenching
 
 Promises express *intent*; whether a promise is actually *kept* is always judged subjectively by an observer @bergstra2008static @burgess2026quantitative. Baugr represents the current state of the world as an *observer-local assessment function*:
 $ alpha : A times P -> \{bot, top\}, $
-where $alpha_a (p) = top$ means *"agent $a$ assesses promise $p$ as kept."* Crucially, $alpha_a (p)$ and $alpha_b (p)$ need not agree—and self-assessment $alpha_a (u)$ is checked consistently across `Self`, `Assisted`, `Accepted`, `Obs`, and active bindings (so if `battery`'s own sensor promise fails, `Assisted(sense)` becomes $bot$).
+where $alpha_a (p) = top$ means *"agent $a$ assesses promise $p$ as kept."* Crucially, $alpha_a (p)$ and $alpha_b (p)$ need not agree—and self-assessment $alpha_a (u)$ is checked consistently across `Self`, `Assisted`, `Accepted`, `Obs`, and active bindings (so if `bank`'s own sensor promise fails, `Assisted(sense)` becomes $bot$).
 
 Because derived promises compute concrete bodies, the resolved state is a partial map from promises to their effective bodies:
 $ S : P -> "Option"("Body"(O, U)), $
 ordered by the flat information order $S_1 <= S_2 quad <=> quad forall p, b, thin S_1 (p) = "some"(b) => S_2 (p) = "some"(b)$ (where `none` means unquenched and $"some"(b)$ means quenched with body $b$).
 
 - *Positive single-stratum systems & circularity rejection:* When no condition contains negation and no promise carries `Obs` value dependencies, the one-step quenching operator $T_alpha (S)$ is monotone under $<=$. By Tarski's theorem @tarski1955fixedpoint, iterating $T_alpha$ from $bot = (lambda p. thin "none")$ reaches the *unique least fixed point* $"lfp"(T_alpha)$ in at most $|P|+1$ steps, mechanically rejecting self-justifying circular promises.
-- *Stratification across both negation and value derivation:* Because both negation (`not`) and arbitrary body derivation (`f(obs)`) can be non-monotonic, we extract the unified dependency set $"promiseDeps"(pi) = "condDeps"(C_pi) union "obsDeps"(beta_pi)$, marking every odd-parity negated edge *and* every `Obs` value edge as *strict* (`true`). A rank assignment $"rank" : P -> NN$ is a *valid stratification* iff:
+- *Autonomy-guarded stratification across negation and value derivation:* Because both negation (`not`) and arbitrary body derivation (`f(obs)`) can be non-monotonic, we extract the unified dependency set $"promiseDeps"(pi) = "condDeps"(a_pi, C_pi) union "obsDeps"(a_pi, beta_pi)$, guarding every atom on its static ownership, polarity, and $"noOpaqueWall"$ checks (so structurally dead or wall-blocked references never emit phantom causal edges) and marking every odd-parity negated edge *and* every `Obs` value edge as *strict* (`true`). A rank assignment $"rank" : P -> NN$ is a *valid stratification* iff:
   $ (d, "strict") in "promiseDeps"(pi) => "rank"(d) < "rank"(pi), quad "and" quad (d, "non-strict") in "promiseDeps"(pi) => "rank"(d) <= "rank"(pi). $
   Any system free of strict cycles admits a valid stratification; any system containing a negated cycle or cyclic value-derivation loop is rejected as `UnstratifiableCycle`. Within each stratum $s$, every negated dependency *and* every `Obs` input lies strictly below $s$ and is already frozen, so every derived promise's candidate body is *constant* throughout stratum $s$. Hence the per-stratum operator stays monotone under $<=$ and converges in $<= |P|+1$ steps to a global fixed point $S^* = T_alpha (S^*)$.
 
 Once $S^*$ is computed, the *active cooperative bindings* are all pairs $(pi_o, pi_u)$ with $"mayBind"(pi_o, pi_u)$, resolved bodies $S^* ("id"_o) = "some"(+o)$ and $S^* ("id"_u) = "some"(-u)$, non-empty runtime overlap $m = o inter u$, and local consumer assessment $alpha_(a_u) ("id"_o) = alpha_(a_u) ("id"_u) = top$.
 
-Finally, static *complete-information* checks (covering all surface dependencies across `Self`, `Assisted`, `Accepted`, and `Obs`, while respecting opaque `Interior` hiding) and `lint()` diagnostics flag dangling IDs, wrong promisers, polarity mismatches, non-interior references, and permanently *null-potent* (`UnsatisfiableMinCount`) thresholds before deployment.
+Finally, static *complete-information* checks (covering all surface dependencies across `Self`, `Assisted`, `Accepted`, and `Obs`, while respecting opaque `Interior` hiding) and `lint()` diagnostics flag dangling IDs, wrong promisers, polarity mismatches, non-interior or opaque-wall-blocked references (`OpaqueWallBlocked`), unregistered explicit targets (`UnknownTargetAgent`), and permanently *null-potent* thresholds across `Assisted`, `Accepted`, and `AtLeast(k, cs)` (`UnsatisfiableMinCount`) before deployment.
 
 // ============================================================================
 // Section 4
@@ -402,7 +402,7 @@ Not every combination of node kinds and link axes makes physical sense—a timel
 This strict discipline yields three clean algebraic properties (all formally verified in §6):
 - *Dual-link symmetry:* Storing a forward link $u arrow.r^(+r) v$ or its inverse $v arrow.r^(-r) u$ represents the *same* underlying relationship; causal reachability and light cones normalize both directions seamlessly.
 - *Transitivity and inference closure:* Every positive axis is transitively closed, and Couch/Burgess semantic inference holds identically: if $x$ contains $y$ and $y$ expresses concept $z$, then $x$ can validly express $z$ (`Contains ; Expresses` $subset.eq$ `Expresses`); similarly `Near ; Expresses` $subset.eq$ `Expresses`.
-- *Quotient coarse-graining $bold(G)$:* Any partition grouping nodes of the *same* kind collapses a $gamma(3,4)$ graph into a coarser well-formed $gamma(3,4)$ graph (dropping interior self-loops), letting architects zoom out from fine components to high-level subsystems without breaking spacetime invariants.
+- *Causal queries & quotient coarse-graining $bold(G)$:* Directed `sources(axis)` and `sinks(axis)` filter strictly to node meta-types admissible on `axis` (so causal `LeadsTo` sources/sinks return *only* Events, never Things or Concepts). Any kind-homogeneous partition collapses a $gamma(3,4)$ graph into a coarser well-formed $gamma(3,4)$ graph (dropping interior self-loops), letting architects zoom out from fine components to high-level subsystems without breaking spacetime invariants.
 
 == The Canonical Functor $Phi$ and Causal Light Cones
 
@@ -424,7 +424,7 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
 - Its *forward causal light cone* $J^+_Phi (pi)$: all promise events reachable from $pi$ along $+L$ (everything $pi$ can possibly influence—its exact *blast radius*).
 - Its *reverse causal light cone* $J^-_Phi (pi)$: all promise events from which $pi$ is reachable along $+L$ (everything that can possibly influence $pi$—its exact *causal ancestry*).
 
-@fig-microgrid illustrates this projection directly on the Hospital Microgrid from §2.1: the left side shows the voluntary promise network; the right side shows its canonical $gamma(3,4)$ image $Phi(cal(S))$, revealing cleanly why `factory`'s monitoring lies strictly outside $J^-_Phi ("hospital:power")$.
+@fig-microgrid illustrates this projection directly on the Hospital Microgrid from §2.1: the left side shows the voluntary promise network; the right side shows its canonical $gamma(3,4)$ image $Phi(cal(S))$, revealing cleanly why `factory`'s monitoring lies strictly outside $J^-_Phi ("hospital:operate")$.
 
 #figure(
   kind: image,
@@ -439,7 +439,7 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
     #set par(justify: false)
     #set text(size: 8.1pt)
     #grid(
-      columns: (0.86fr, auto, 1.56fr),
+      columns: (0.88fr, auto, 1.54fr),
       align: center + horizon,
       gutter: 6pt,
       // Left: Promise System
@@ -459,8 +459,8 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
         #text(size: 7.6pt, fill: luma(80))[voluntary `+`/`-` overlap $b_1 inter b_2$]
         #v(4pt)
         #block(width: 100%, fill: white, stroke: 0.6pt + accent, inset: 4.5pt, radius: 2pt)[
-          *`battery`*: `-sense` (mains)\
-          `+backup` $|$ `not Assisted(sense)`
+          *`bank`* (opaque): #box[`-sense`], #box[`-recv_req`]\
+          `+grant` $|$ `not Assisted(sense)` $and$ `AtLeast(2)`
         ]
         #v(4pt)
         #grid(
@@ -468,8 +468,8 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
           gutter: 5pt,
           block(width: 100%, fill: greenbg, stroke: 0.6pt + greenedge, inset: 4.5pt, radius: 2pt)[
             *`hospital`*\
-            `-use_power`\
-            (mains / bat)
+            `-draw` (mains/bank)\
+            `+operate | Assisted(draw)`
           ],
           block(width: 100%, fill: warmbg, stroke: 0.6pt + warmedge, inset: 4.5pt, radius: 2pt)[
             *`factory`*\
@@ -495,12 +495,12 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
         #v(4pt)
         // Things layer
         #block(width: 100%, fill: softbg, stroke: 0.5pt + luma(185), inset: 4.5pt, radius: 2pt)[
-          #align(left)[*Things ($t$)*: `mains`, `battery`, `hospital`, `factory` #h(1fr) _($e arrow.r^(+C) t$)_]
+          #align(left)[*Things ($t$)*: `mains`, `bank` ($arrow.r^(+C)$ `cells`), `hospital`, `factory` #h(1fr) _($e arrow.r^(+C) t$)_]
         ]
         #v(4pt)
         // Events layer with shaded reverse light cone
         #grid(
-          columns: (1.72fr, 0.80fr),
+          columns: (1.74fr, 0.78fr),
           gutter: 5pt,
           block(
             width: 100%,
@@ -509,10 +509,11 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
             inset: 4.5pt,
             radius: 3pt,
           )[
-            #align(left)[#text(size: 7.3pt, weight: "bold", fill: greenedge)[Events ($e$) inside $J^-_Phi ("hospital:use_power")$]]
+            #align(left)[#text(size: 7.3pt, weight: "bold", fill: greenedge)[Events ($e$) inside $J^-_Phi ("hospital:operate")$]]
             #v(3pt)
-            #text(size: 6.9pt)[`mains:power` $arrow.r^(+L)$ `bat:sense` $arrow.r^(+L)$ `bat:backup`]\
-            #text(size: 6.9pt)[`mains:power`, `bat:backup` $arrow.r^(+L)$ *`hospital:use_power`*]
+            #text(size: 6.9pt)[`mains:power` $arrow.r^(+L)$ `bank:sense`]\
+            #text(size: 6.9pt)[`bank:sense`, `cells` $arrow.r^(+L)$ `bank:grant`]\
+            #text(size: 6.9pt)[`mains:power`, `bank:grant`, `hosp:draw` $arrow.r^(+L)$ *`hosp:operate`*]
           ],
           block(
             width: 100%,
@@ -535,7 +536,7 @@ More profoundly, once a Promise System lives in $gamma(3,4)$, every promise $pi$
       ],
     )
   ],
-  caption: [Canonical projection $Phi$ of the Hospital Microgrid into strict Semantic Spacetime $gamma(3,4)$. Even across the negated failover link `bat:sense` $arrow.r^(+L)$ `bat:backup`, Law III guarantees that any perturbation to `factory:monitor` (outside the dashed reverse causal light cone $J^-$) leaves `hospital:use_power` strictly invariant.],
+  caption: [Canonical projection $Phi$ of the Hospital Microgrid into strict Semantic Spacetime $gamma(3,4)$. Notice that `+LeadsTo` flows into conditional promise `hosp:operate` (via `Assisted(draw)`), not into unconditional `hosp:draw`. Even across the negated failover link `bank:sense` $arrow.r^(+L)$ `bank:grant`, Law III guarantees that any perturbation to `factory:monitor` (outside the dashed reverse light cone $J^-$) leaves `hosp:operate` strictly invariant.],
 ) <fig-microgrid>
 
 Complementing $Phi$, every superagent $S$ also induces a *coarse-graining directory* $pi_"directory" (S)$ @burgess2015spacetimes2 (Def. L1736), partitioning $S$'s interior sub-agents and interior promises from the explicit surface promises visible to external observers.
@@ -546,19 +547,17 @@ Complementing $Phi$, every superagent $S$ also induces a *coarse-graining direct
 
 = Generalized Valency and Composable System Laws
 
-Bilateral promise resolution tells us *which* voluntary relationships are locally active. Yet real systems also obey *collective capacity and coordination laws* across a set of simultaneous bindings—such as the hospital battery's 1500 W inverter limit, a port allocator preventing two containers from binding TCP port 443 on the same host, or a fleet agreeing on one wire protocol version.
+Bilateral promise resolution tells us *which* voluntary relationships are locally active. Yet real systems also obey *collective capacity and coordination laws* across a set of simultaneous bindings—such as the hospital battery's 1600 W inverter limit, a port allocator preventing two containers from binding TCP port 443 on the same host, or a fleet agreeing on one wire protocol version.
 
 Rather than baking a closed menu of special-case binding modes into the core calculus, Baugr expresses collective invariants through two minimal, open algebraic abstractions:
 
-+ *Monoidal Promise Valency (`+b#n`):* Burgess introduces *Promise Valency* @burgess2015spacetimes2 (§2.7) to describe how many simultaneous consumers an offer can sustain—from *exclusive* ("fermionic", `#1`, like a hardware lock or dedicated port), to *bounded capacity* (`#1500W`, `#8` replicas), to *unlimited broadcast* ("bosonic", `#∞`, like a public time signal). Baugr observes that all of these are instances of a single algebraic structure: an *Ordered Commutative Monoid* $(R, 0, +, <=)$, where $(0, +)$ is a commutative monoid, $<=$ is a preorder with $0 <= x$, and $+$ is monotone in both arguments. Every active binding contributes a cost $w in R$, and an offer with capacity $c in R$ satisfies valency iff $sum w_i <= c$. Because Cartesian products of ordered commutative monoids are again ordered commutative monoids, multi-dimensional budgets—such as `("CPU millicores", "RAM MiB")`—fall out for free with zero extra machinery. Moreover, monotonicity guarantees *withdrawal safety*: if an agent voluntarily withdraws a binding, a valid system can never become overloaded.
-+ *Open Composable Scope Laws:* Any global or scoped system invariant is simply a predicate over the resolved system (returning typed diagnostics on violation) closed under conjunction. Six canonical laws cover the classic patterns of distributed coordination:
-  - *Single-Offer Valency (`ValencyLaw`)*: a designated offer's cumulative monoidal load stays within its capacity $c in R$.
-  - *Grouped Cross-Offer Budgets (`BudgetBy`)*: maps bindings to `(group, demand)` and checks aggregate demand per group against `capacity(group)` in one pass—verifying cross-offer shared pools (such as an agent's total grants across multiple offers, or a server's shared RAM across Postgres and Redis).
-  - *Quorum*: a designated promise achieves at least $k$ active cooperative bindings.
-  - *Unique Provider*: a designated consumer binds to at most one active offer.
-  - *Pairwise Disjointness (`DisjointBy`)*: active bindings carry pairwise distinct extracted keys—for instance, mapping each binding to `(host, tcp_port)` checks port uniqueness across an entire multi-host fleet in one unified law.
-  - *Coordination Agreement* $C(b)$ (`AgreementBy`) @burgess2014spacetimes1 (L2575): active bindings grouped by coordination domain agree on a single shared value (e.g., voltage or protocol version), flagging drift across autonomous peers.
-+ *Universal Static Upper-Bound Discharge:* Checking a safety law under optimistic assessment ($alpha equiv top$) is *not* sufficient when failover negations exist: a backup battery draws 0 W while mains is healthy and only overdraws during a blackout! Let $B_"max"(cal(S))$ be the set of all statically bindable offer–use pairs (ignoring conditions and $alpha$). Because every runtime binding set satisfies $B(cal(S), alpha) subset.eq B_"max"(cal(S))$, *any downward-closed law $L$* (valency, grouped budgets, pairwise disjointness, coordination agreement $C(b)$) that holds on $B_"max"(cal(S))$ is *proved in Lean 4* (`static_discharge_universal`) to hold universally across *every* possible runtime scenario $alpha$.
++ *Monoidal Promise Valency (`+b#n`) & Top-Completion `Cap<R>` ($R^top$):* Burgess introduces *Promise Valency* @burgess2015spacetimes2 (§2.7) to describe how many simultaneous consumers an offer can sustain—from *exclusive* ("fermionic", `#1`, like a hardware lock or dedicated port), to *bounded capacity* (`#1600W`, `#8` replicas), to *unlimited broadcast* ("bosonic", `#∞`, like a public time signal). Baugr models all of these via a single algebraic structure: an *Ordered Commutative Monoid* $(R, 0, +, <=)$, together with its top-completion `Cap<R>` $= R^top$ (`Bounded(r) | Unbounded`, proved to satisfy all 8 monoid axioms in Lean 4). Because `Cap<R>` adjoins $infinity$ homogeneously—and Cartesian products $(R_1, R_2)$ preserve all monoid axioms—a *single* budget pass seamlessly mixes `#1` (`Cap::Bounded(1)`), `#1600W` (`Cap::Bounded(1600)`), `#∞` (`Cap::Unbounded`), and multi-dimensional `(CPU, RAM)` ceilings, while monotonicity guarantees *withdrawal safety*.
++ *Four Orthogonal Composable Scope Laws:* Any global or scoped system invariant is simply a predicate over the resolved system (returning typed diagnostics on violation) closed under conjunction. Four minimal, non-redundant laws span distributed coordination fleet-wide in one pass:
+  - *Grouped Monoidal Budgets (`BudgetBy`, downward-closed)*: maps bindings to `(group, demand)` in any `ResourceMonoid` (including `Cap<R>`) and checks aggregate demand per group against `capacity(group)`—unifying single-offer valency (`check_valency`), cross-offer shared pools (an agent's total grants or a server's shared RAM across Postgres and Redis), and heterogeneous `#1`/`#n`/`#∞` ceilings.
+  - *Pairwise Disjointness (`DisjointBy`, downward-closed)*: active bindings carry pairwise distinct extracted keys—for instance, mapping each binding to `(host, tcp_port)` checks port uniqueness across an entire multi-host fleet in one unified law, pinpointing the exact colliding pair.
+  - *Coordination Agreement* $C(b)$ (`AgreementBy`, downward-closed) @burgess2014spacetimes1 (L2575): active bindings grouped by coordination domain agree on a single shared value (e.g., voltage or protocol version), flagging drift across autonomous peers.
+  - *Grouped Cardinality Intervals (`CardinalityBy`, runtime)*: maps bindings to groups and checks every declared group's count against inclusive bounds `[min, max]`—unifying consumer quorums (`check_quorum`), unique providers (`check_unique_provider`), and fleet-wide replica ranges `[2, 5]`, explicitly catching declared groups with `0` active bindings.
++ *Type-Safe Universal Static Upper-Bound Discharge:* Checking a safety law under optimistic assessment ($alpha equiv top$) is *not* sufficient when failover negations exist: a backup battery draws 0 W while mains is healthy and only overdraws during a blackout! Let $B_"max"(cal(S))$ be the list of all statically bindable offer–use pairs (ignoring conditions and $alpha$). Lean 4 proves that every runtime active binding list is a multiplicity-preserving sublist $B(cal(S), alpha) subset.eq_"sublist" B_"max"(cal(S))$ (`activeBindings_sublist_staticMax`), so *any downward-closed law $L$*—specifically `BudgetBy`, `DisjointBy`, and `AgreementBy`, all proved downward-closed in Lean 4—holding on $B_"max"(cal(S))$ holds universally across *every* runtime scenario $alpha$ (`static_discharge_universal`). In Rust, `StaticUpperBound::discharge` accepts *only* types implementing the `DownwardClosedLaw` marker trait, turning an unsound attempt to discharge an upward-closed law (such as a `CardinalityBy` quorum) on $B_"max"(cal(S))$ into a *compile-time type error*.
 
 Crucially, because these laws sit *above* the core quenching semantics, users can add arbitrary domain laws without weakening any of the four universal theorems proved for the underlying calculus.
 
@@ -568,25 +567,26 @@ Crucially, because these laws sit *above* the core quenching semantics, users ca
 
 = The Four Universal Laws (Machine-Checked in Lean 4)
 
-We now state the four universal laws guaranteed for *every* Promise System expressible in Baugr, explain *why* each holds mathematically, and catalog all *33 machine-checked theorems* proved in pure Lean 4 (zero external proof libraries, zero `sorryAx`).
+We now state the four universal laws guaranteed for *every* Promise System expressible in Baugr, explain *why* each holds mathematically, and catalog all *37 machine-checked theorems* proved in pure Lean 4 (zero external proof libraries, zero `sorryAx`).
 
 == Law I — Non-Coercion (Axiom of Autonomy)
 
 #lawbox("I", [Non-Coercion (`autonomy_unaccepted_offer_inert`)])[
-  Let $cal(S)$ be any Promise System and suppose we extend $cal(S)$ by adding a new offer $pi_"new"$ that is not statically bindable (`mayBind`) to any existing `Use` promise in $cal(S)$ and is not already referenced by any existing `Self` or `Interior` condition or observation. Then for *every* existing promise $pi$, assessment $alpha$, and value state $S$, one-step quenching `quenchStep` (both boolean activation *and* derived body computation) in $cal(S) union \{pi_"new"\}$ yields the exact same `Option(Body(O, U))` as in $cal(S)$.
+  Let $cal(S)$ be any Promise System and extend $cal(S)$ with a fresh offer $pi_"new"$ (`find? id = none`) from any external agent (distinct from $pi$'s promiser and not a directly visible interior sub-agent of $pi$'s promiser) that is not statically bindable (`mayBind`) to any existing `Use` promise in $cal(S)$. Then—*unconditionally*, with zero syntactic side-conditions—one-step quenching `quenchStep` (both boolean activation *and* derived body computation) for $pi$ in $cal(S) union \{pi_"new"\}$ yields the exact same `Option(Body(O, U))` as in $cal(S)$.
 ]
 
-*Why it holds:* Both condition atoms and `LocalObs` views inspect only the promiser's own promises, its interior sub-agents, offers compatible with its own `Use` promises, or `Use` promises compatible with its own offers. Because $pi_"new"$ is an unaccepted offer, neither `evalCond` nor `buildLocalObs` can detect it—and by structural induction across `AtLeast` and `Not`, no compound formula or derived body function can observe its presence. In Promise Theory terms, an unaccepted imposition has zero causal power.
+*Why it holds:* Both condition atoms and `LocalObs` views enforce strict ownership, polarity, and visible-interior predicates on every reference. Because $pi_"new"$ is an unaccepted offer from an external agent, neither `evalCond` nor `buildLocalObs` can observe it—even if an existing promise contained a dangling reference to $pi_"new"$'s ID. In Promise Theory terms, an external unaccepted imposition has zero causal power.
 
-== Law II — Boundary Integrity (Opaque Encapsulation)
+== Law II — Boundary Integrity (Event-Horizon Vertex Cut)
 
-#lawbox("II", [Boundary Integrity (`opaque_non_piercing`, `opaque_interior_perturbation_contained`)])[
-  Let $s$ be an opaque superagent in $cal(H)$, let $a$ be a strict interior member ($s #splus a$), and let $b$ be an exterior agent ($not (s prec.eq b)$). Then:
-  + *Non-piercing (outward and inward):* Neither an offer (fixed or derived) from $a$ to $b$ nor an offer from $b$ to $a$ can ever form an active binding (`mayBind = false`).
-  + *Interior isolation:* If two assessments $alpha_1, alpha_2$ differ *only* on promises inside $s$ that do not lie in the reverse causal light cone $J^-_Phi (pi_"ext")$ of an exterior promise $pi_"ext"$, then $pi_"ext"$ resolves to the exact same `Option(Body(O, U))` under $alpha_1$ and $alpha_2$.
+#lawbox("II", [Boundary Integrity (`opaque_non_piercing`, `opaque_no_direct_causal_crossing`, `opaque_event_horizon_cut`)])[
+  Let $s$ be an opaque superagent in $cal(H)$, let $a$ be a strict interior member ($s #splus a$), and let $b$ be an exterior agent ($not (s prec.eq b)$—including an enclosing parent superagent above $s$). Then:
+  + *Non-piercing (outward and inward):* Neither an offer (fixed or derived) from $a$ to $b$ nor from $b$ to $a$ can ever form an active binding (`mayBind = false`).
+  + *No direct causal crossing:* Every `+LeadsTo` edge in $Phi(cal(S))$ satisfies `noOpaqueWall` between source and target promisers (`opaque_no_direct_causal_crossing`).
+  + *Event-horizon vertex cut & interior isolation:* Every causal path in $Phi(cal(S))$ from any strict interior promise of $s$ to any exterior promise *must* pass through an intermediate *surface promise* owned by $s$ (`opaque_event_horizon_cut`), and any interior perturbation outside $J^-_Phi (pi_"ext")$ leaves $pi_"ext"$ strictly invariant.
 ]
 
-*Why it holds:* Part (1) follows directly from the symmetry and enforcement of `noOpaqueWall` inside `structBindable`/`mayBind`. Part (2) composes boundary discipline with Law III: internal changes inside an opaque superagent can affect the outside world *only* if they travel along an explicit causal path through a surface promise exposed by $s$ itself (such as `cluster`'s 2-of-3 emergent `+durable` offer in @fig-opaque or `bank`'s computed power grants in §8.2).
+*Why it holds:* Both `mayBind` and `Interior` enforce `noOpaqueWall`, and `promiseDeps` guards every dependency on the exact same boundary predicate. Consequently, no direct causal arrow can jump across an opaque wall—the surface promises of $s$ form a genuine graph-theoretic *vertex cut* in Semantic Spacetime separating $s$'s entire interior from the outside universe (even across arbitrarily nested opaque superagents).
 
 == Law III — Causal Locality (Reverse Light-Cone Containment)
 
@@ -610,15 +610,15 @@ We now state the four universal laws guaranteed for *every* Promise System expre
 
 == Complete Machine-Checked Theorem Catalog
 
-@tab-theorems lists all *33 audited theorems* verified in pure Lean 4 (`lean4` 4.35.0, zero `Mathlib`, `0` warnings, `0 sorryAx`). Every theorem depends strictly on Lean's standard logical foundations (`propext`, `Quot.sound`, and where classical decidability enters, `Classical.choice`).
+@tab-theorems lists all *37 audited theorems* verified in pure Lean 4 (`lean4` 4.35.0, zero `Mathlib`, `0` warnings, `0 sorryAx`). Every theorem depends strictly on Lean's standard logical foundations (`propext`, `Quot.sound`, and where classical decidability enters, `Classical.choice`).
 
 #figure(
   {
-    set text(size: 7.9pt)
-    show raw: text.with(size: 7.1pt)
+    set text(size: 7.8pt)
+    show raw: text.with(size: 7.0pt)
     table(
-      columns: (auto, 1.60fr, 1.82fr, auto),
-      inset: 3.5pt,
+      columns: (auto, 1.62fr, 1.82fr, auto),
+      inset: 3.3pt,
       align: left,
       stroke: (x: none, y: 0.4pt + luma(200)),
       fill: (_, row) => if row == 0 { softbg } else { none },
@@ -636,18 +636,20 @@ We now state the four universal laws guaranteed for *every* Promise System expre
       [Law IV], [`stratumStep_mono`], [Per-stratum step operator is monotone once lower strata are frozen.], [`P, Q`],
       [Law IV], [`stratumIter_fixed_point`, \ `evalStratified_fixed_point`], [Finite convergence ($<= |P|+1$ steps) to a global fixed point of $T_alpha$.], [`P, C, Q`],
       [Law IV], [`stratification_independent`], [*Order Independence*: any two valid stratifications yield the same value fixed point.], [`P, C, Q`],
-      [Law I], [`autonomy_unaccepted_offer_inert`], [*Non-Coercion*: unaccepted offers cannot alter `quenchStep` (conditions or derived bodies).], [`P, Q`],
+      [Law I], [`autonomy_unaccepted_offer_inert`], [*Non-Coercion*: external unaccepted offers are unconditionally inert on `quenchStep`.], [`P, Q`],
       [Law III], [`projectSst_wellFormed`], [Canonical functor $Phi : "PromiseSystem" -> gamma(3,4)$ is always well-formed.], [`P, Q`],
       [Law III], [`perturbation_in_reverse_cone`], [*Causal Locality*: perturbations outside $J^-_Phi (pi)$ leave $pi$'s resolved body invariant.], [`P, Q`],
-      [Law II], [`noOpaqueWall_symm`], [Opaque boundary non-piercing predicate is symmetric.], [`P, Q`],
+      [Law II], [`noOpaqueWall_refl`, `noOpaqueWall_symm`], [Opaque boundary non-piercing predicate is reflexive and symmetric.], [`P, Q`],
       [Law II], [`opaque_non_piercing`, \ `opaque_non_piercing_inward`], [*Boundary Integrity*: opaque superagents block outward & inward piercing.], [`P, C, Q`],
       [Law II], [`opaque_interior_perturbation_` \ `contained`], [Interior perturbations of an opaque superagent stay contained outside $J^-$.], [`P, Q`],
-      [Laws], [`valency_withdrawal_safe`, `allLaws_cons`], [Monoidal valency withdrawal safety; open `ScopeLaw` conjunction soundness.], [`P, Q`],
-      [Static], [`activeBindings_subset_staticMax`, \ `static_discharge_universal`], [*Universal Static Discharge*: downward-closed laws on $B_"max"$ hold for all $alpha$.], [`P, Q`],
-      [Static], [`disjoint_downward_closed`, \ `agreement_downward_closed`], [`DisjointBy` and Burgess `AgreementBy` $C(b)$ are universally statically dischargeable.], [_(none)_],
+      [Law II], [`opaque_no_direct_causal_crossing`, \ `opaque_event_horizon_cut`], [*Event-Horizon Vertex Cut*: no `+L` crosses a wall; every path hits a surface promise.], [`P, Q`],
+      [Laws], [`valency_withdrawal_safe`], [Monoidal valency (`ResourceMonoid`, incl. `Cap<R>`) is withdrawal-safe.], [`P`],
+      [Laws], [`allLaws_cons`], [Open `ScopeLaw` conjunction soundness.], [`P, Q`],
+      [Static], [`activeBindings_sublist_staticMax`, \ `static_discharge_universal`], [*Universal Static Discharge*: sublist-downward-closed laws on $B_"max"$ hold for all $alpha$.], [`P`],
+      [Static], [`budget_downward_closed`, \ `disjoint_downward_closed`, \ `agreement_downward_closed`], [`BudgetBy`, `DisjointBy`, and Burgess `AgreementBy` $C(b)$ are universally statically dischargeable.], [_(none)_],
     )
   },
-  caption: [Complete catalog of all 33 audited Lean 4 theorems (`0 sorryAx`, zero `Mathlib`). Axioms: `P` = `propext`, `Q` = `Quot.sound`, `C` = `Classical.choice`.],
+  caption: [Complete catalog of all 37 audited Lean 4 theorems (`0 sorryAx`, zero `Mathlib`). Axioms: `P` = `propext`, `Q` = `Quot.sound`, `C` = `Classical.choice`.],
 ) <tab-theorems>
 
 // ============================================================================
@@ -668,7 +670,7 @@ Does anything like Baugr already exist? To answer accurately, we surveyed five n
       stroke: (x: none, y: 0.4pt + luma(200)),
       fill: (_, row) => if row == 0 { softbg } else { none },
       [*System / Paradigm*], [*Voluntary `+`/`-` & Autonomy*], [*Observer Subjectivity*], [*Opaque Walls*], [*SST $gamma(3,4)$*], [*Machine Proofs*], [*Where It Beats Baugr*],
-      [*Baugr v0.3*], [*Yes* (Law I)], [*Yes* (Law III)], [*Yes* (Law II)], [*Yes* (strict)], [Lean 4 (33 thms) + DRT], [Minimal verified autonomy + value-derived PT + causal geometry],
+      [*Baugr v0.4*], [*Yes* (Law I)], [*Yes* (Law III)], [*Yes* (Law II)], [*Yes* (strict)], [Lean 4 (37 thms) + DRT], [Minimal verified autonomy + value-derived PT + causal geometry],
       [*SSTorytime / N4L* @burgess2025sstorytime], [No], [No], [Partial (`+C`)], [*Yes* (relaxed)], [No], [Human N4L authoring, PostgreSQL knowledge graphs, fuzzy search],
       [*CFEngine* @burgess1995cfengine], [Yes (OS domain)], [Local host], [Bundles (informal)], [No], [No], [Battle-tested Linux convergence runtime across millions of hosts],
       [*Assume–Guarantee / Pacti* @benveniste2018contracts @incer2025pacti], [No (global $A => G$)], [No], [Composition $times.o$], [No], [Algebraic solvers], [Continuous/hybrid CPS synthesis, polyhedral quotients & refinement],
@@ -712,9 +714,9 @@ How does an engineer turn an informal architecture into a formally checked Baugr
 
 + *Define your domain compatibility as native code (`BodyAlgebra`).* Decide what an offer looks like ($O$), what an acceptance looks like ($U$), and what non-empty shared commitment ($M$) emerges when they match (`fn overlap(&self, o: &O, u: &U) -> Option<Self::Overlap>`). Much like Rust's `Iterator::Item` / `Option<Self::Item>`, keeping `Option` on the method return lets Baugr's engine distinguish compatible from incompatible pairs while guaranteeing every active `Binding` carries a plain, non-empty `M` without unwrapping. Use symmetric types ($O = U = M$) via `SymmetricMeet`, or asymmetric structs when offers state capacities/ranges and uses state demands/constraints.
 + *Declare agents, superagent walls, and voluntary promises (`Promise::offer`, `accept`, `derive_offer`, `derive_use`).* Register superagents (`add_superagent(name, opaque)`) and containment edges (`contain(superagent, child)`), then attach static offers (`+o`), acceptances (`-u`), or value-derived promises (`+f(obs) | C` / `-f(obs) | C` via `DeriveAlgebra`), explicit visibility scopes (`.with_scope(...)`), and boolean conditions.
-+ *Run static diagnostics before evaluating anything (`lint()`).* Catch modeling bugs—typos in promise IDs, referencing another agent's promise inside `SelfPromise`, polarity mismatches, pointing `Interior` outside a superagent's children, permanently *null-potent* thresholds (`UnsatisfiableMinCount`), or leaving a target blind to a surface dependency's scope—before simulation or deployment.
-+ *Evaluate observer-local scenarios and query causal geometry.* Call `resolve_optimistic()` to verify the healthy steady state, pass arbitrary observer-local assessment closures `resolve(|observer, promise| ...)` to test partial blackouts, partitions, or sensor failures, inspect resolved bodies via `resolved.offer(&id)` / `resolved.use_body(&id)`, project via `project_sst(&sys)` for `forward_causal_cone()` ($J^+$) and `reverse_causal_cone()` ($J^-$), and call `directory_of(&sys, &superagent)`.
-+ *Discharge or enforce collective laws (`static_upper_bound`, `ResolutionView`).* For static systems, run downward-closed laws on `sys.static_upper_bound()` to prove them universally for *all* $alpha$ (`static_discharge_universal`); on any resolved snapshot, assert single-offer valency (`check_valency`), cross-offer grouped budgets (`check_budget`), unique slots (`check_disjoint`), peer consensus $C(b)$ (`check_agreement`), quorums (`QuorumLaw`), or custom `ScopeLaw`s.
++ *Run static diagnostics before evaluating anything (`lint()`).* Catch modeling bugs—typos in promise IDs, referencing another agent's promise inside `SelfPromise`, polarity mismatches, pointing `Interior` outside a superagent's children or across an inner opaque wall (`OpaqueWallBlocked`), targeting unregistered agents (`UnknownTargetAgent`), permanently *null-potent* thresholds (`UnsatisfiableMinCount` across `Assisted`, `Accepted`, and `AtLeast`), or leaving a target blind to a surface dependency's scope—before simulation or deployment.
++ *Evaluate observer-local scenarios and query causal geometry.* Call `resolve_optimistic()` to verify the healthy steady state, pass arbitrary observer-local assessment closures `resolve(|observer, promise| ...)` to test partial blackouts, partitions, or sensor failures, inspect resolved bodies via `resolved.body(&id)` / `resolved.offer(&id)` / `resolved.use_body(&id)`, project via `project_sst(&sys)` for `forward_causal_cone()` ($J^+$) and `reverse_causal_cone()` ($J^-$), and call `directory_of(&sys, &superagent)`.
++ *Discharge or enforce collective laws (`static_upper_bound`, `ResolutionView`).* For static systems, discharge `DownwardClosedLaw`s (`discharge_valency`, `discharge_budget`, `discharge_disjoint`, `discharge_agreement`) on `sys.static_upper_bound()` to prove them universally for *all* $alpha$ (`static_discharge_universal`) with compile-time rejection of non-downward-closed laws; on any resolved snapshot, assert single-offer valency (`check_valency`), heterogeneous `Cap<R>` cross-offer budgets (`check_budget`), unique slots (`check_disjoint`), peer consensus $C(b)$ (`check_agreement`), quorums/unique providers (`CardinalityBy`, `check_quorum`, `check_unique_provider`), or custom `ScopeLaw`s.
 
 == Worked Showcase: Microgrid with Emergent 2-of-3 Bank & Voluntary Request–Grant Allocation
 
@@ -728,63 +730,71 @@ $ "bank" arrow.r^(+C) \{"cell"_1, "cell"_2, "cell"_3\} quad ("opaque"), \
   "bank" arrow.r^(+f_("prio")("recv_req", "cells") | not "Assisted"("sense") and "AtLeast"(2, "Interior")) \{"hosp", "clinic"\}, \
   "clinic" arrow.r^(+"diesel" | not "Assisted"("draw")) "clinic", quad "clinic" arrow.r^(+f_("rem")("draw")) "aux". $
 
-Below is the direct, verified Rust realization (abbreviated only in struct field repetition) exercising value-derived `DeriveAlgebra`, opaque encapsulation, emergent interior-cell wattage, autonomous partial vs. strict failover, grouped cross-offer `check_budget`, `check_agreement`, reverse light cones $J^-$, and `directory_of`:
+Below is the direct, verified Rust realization (abbreviated only in struct field repetition) exercising value-derived `DeriveAlgebra` with channel-sharp `may_overlap`, deduplicated `Obs`, opaque encapsulation, emergent interior-cell wattage, autonomous partial vs. strict failover, heterogeneous `Cap<u32>` `check_budget`, `check_agreement`, reverse light cones $J^-$, and `directory_of`:
 
 ```rust
 use baugr::{
-    AgentSet, Body, BodyAlgebra, Cond, DeriveAlgebra, LocalView, Obs, Promise, PromiseSystem,
-    ResolutionView, SstNode, directory_of, project_sst,
+    AgentSet, Body, BodyAlgebra, Cap, Cond, DeriveAlgebra, LocalView, Obs, Promise,
+    PromiseSystem, ResolutionView, SpecRef, SstNode, directory_of, project_sst,
 };
 
 enum GridOffer {
-    CellPower(u32), Request { watts: u32, priority: u8 }, Power { voltage: u16, watts: u32 }, Diesel,
+    CellPower(u32), Request { w: u32, prio: u8 }, Power { v: u16, w: u32 }, Diesel,
 }
-enum GridUse   { AcceptRequests, DrawPower { voltage: u16, min_watts: u32, max_watts: u32 } }
-enum GridRule  { PriorityGrant(&'static str), ResidualRequest { total_wanted: u32 } }
+enum GridUse  { AcceptReqs, Draw { v: u16, min_w: u32, max_w: u32 } }
+enum GridRule { PriorityGrant(&'static str), ResidualReq { wanted: u32 } }
 struct GridAlgebra;
 
 impl BodyAlgebra for GridAlgebra {
     type Offer = GridOffer; type Use = GridUse; type Overlap = (u16, u32);
     fn overlap(&self, o: &GridOffer, u: &GridUse) -> Option<Self::Overlap> {
         match (o, u) {
-            (GridOffer::Request { watts, .. }, GridUse::AcceptRequests) => Some((0, *watts)),
-            (
-                GridOffer::Power { voltage, watts },
-                GridUse::DrawPower { voltage: uv, min_watts, max_watts },
-            ) if voltage == uv && watts >= min_watts => Some((*voltage, (*watts).min(*max_watts))),
+            (GridOffer::Request { w, .. }, GridUse::AcceptReqs) => Some((0, *w)),
+            (GridOffer::Power { v, w }, GridUse::Draw { v: uv, min_w, max_w })
+                if v == uv && w >= min_w => Some((*v, (*w).min(*max_w))),
             _ => None,
         }
     }
 }
 
 impl DeriveAlgebra<&'static str, &'static str, GridRule> for GridAlgebra {
+    fn may_overlap(
+        &self, offer: SpecRef<'_, GridOffer, GridRule>, use_: SpecRef<'_, GridUse, GridRule>,
+    ) -> bool {
+        match (offer, use_) {
+            (SpecRef::Derived(GridRule::PriorityGrant(_)), SpecRef::Fixed(u)) =>
+                matches!(u, GridUse::Draw { .. }),
+            (SpecRef::Derived(GridRule::ResidualReq { .. }), SpecRef::Fixed(u)) =>
+                matches!(u, GridUse::AcceptReqs),
+            _ => false,
+        }
+    }
     fn derive_offer(
         &self, rule: &GridRule, obs: &LocalView<'_, &'static str, &'static str, Self>,
     ) -> Option<GridOffer> {
         match rule {
             GridRule::PriorityGrant(recipient) => {
-                // Emergent capacity = sum of healthy interior cells (1600W w/ 2/3, 2400W w/ 3/3)
+                // Emergent cap = sum of healthy interior cells (1600W w/ 2/3, 2400W w/ 3/3)
                 let cap: u32 = obs.interior_entries().iter().filter_map(|(_, _, b)| match b {
                     Body::Offer(GridOffer::CellPower(w)) => Some(*w), _ => None,
                 }).sum();
                 let mut reqs: Vec<_> = obs.assisted("bank:recv_req").filter_map(|e| match e.offer {
-                    GridOffer::Request { watts, priority } => Some((*priority, *e.promiser, *watts)),
-                    _ => None,
+                    GridOffer::Request { w, prio } => Some((*prio, *e.promiser, *w)), _ => None,
                 }).collect();
                 reqs.sort_by_key(|(p, a, _)| (*p, *a));
                 let mut rem = cap;
                 for (_, agent, want) in reqs {
                     let g = want.min(rem); rem = rem.saturating_sub(g);
                     if agent == *recipient {
-                        return (g > 0).then_some(GridOffer::Power { voltage: 230, watts: g });
+                        return (g > 0).then_some(GridOffer::Power { v: 230, w: g });
                     }
                 }
                 None
             }
-            GridRule::ResidualRequest { total_wanted } => {
+            GridRule::ResidualReq { wanted } => {
                 let got: u32 = obs.assisted("clinic:draw").map(|e| e.overlap.1).sum();
-                let deficit = total_wanted.saturating_sub(got);
-                (deficit > 0).then_some(GridOffer::Request { watts: deficit, priority: 1 })
+                let deficit = wanted.saturating_sub(got);
+                (deficit > 0).then_some(GridOffer::Request { w: deficit, prio: 1 })
             }
         }
     }
@@ -798,26 +808,31 @@ for (c, pid) in [("cell1", "cell1:chg"), ("cell2", "cell2:chg"), ("cell3", "cell
     sys.add_promise(Promise::offer(pid, c, AgentSet::All, GridOffer::CellPower(800)));
 }
 // ... add `grid:mains`, `bank:sense`, `bank:recv_req`, `hosp:req` (1kW,p1), `clinic:req` (800W,p2)
-let bank_obs = vec![Obs::assisted("bank:recv_req"), Obs::interior("cell1:chg"),
-                    Obs::interior("cell2:chg"), Obs::interior("cell3:chg")];
+let bank_obs = [
+    Obs::assisted("bank:recv_req"), Obs::interior("cell1:chg"),
+    Obs::interior("cell2:chg"), Obs::interior("cell3:chg"),
+];
 let failover = Cond::all(vec![!Cond::assisted("bank:sense"), Cond::at_least(2, vec![
     Cond::interior("cell1:chg"), Cond::interior("cell2:chg"), Cond::interior("cell3:chg"),
 ])]);
 for (pid, who) in [("bank:grant_hosp", "hospital"), ("bank:grant_clinic", "clinic")] {
-    sys.add_promise(Promise::derive_offer(pid, "bank", AgentSet::single(who), bank_obs.clone(),
+    sys.add_promise(Promise::derive_offer(pid, "bank", AgentSet::single(who), bank_obs,
         GridRule::PriorityGrant(who)).when(failover.clone()));
 }
-// Partial clinic (`min: 1`) accepts 600W leftover & derives a 200W residual request to `aux`;
-// strict clinic (`min: 800`) rejects 600W -> `!Cond::assisted("clinic:draw")` fires diesel!
+// Partial clinic (`min_w: 1`) accepts 600W leftover & derives a 200W residual request to `aux`;
+// strict clinic (`min_w: 800`) rejects 600W -> `!Cond::assisted("clinic:draw")` fires diesel!
 let blackout = |obs: &&str, p: &&str| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg"));
 let r = sys.resolve(blackout)?;
-assert_eq!(r.offer("bank:grant_hosp"),   Some(&GridOffer::Power { voltage: 230, watts: 1000 }));
-assert_eq!(r.offer("bank:grant_clinic"), Some(&GridOffer::Power { voltage: 230, watts: 600 }));
-assert_eq!(r.offer("clinic:req_aux"),    Some(&GridOffer::Request { watts: 200, priority: 1 }));
+assert_eq!(r.offer("bank:grant_hosp"),   Some(&GridOffer::Power { v: 230, w: 1000 }));
+assert_eq!(r.offer("bank:grant_clinic"), Some(&GridOffer::Power { v: 230, w: 600 }));
+assert_eq!(r.offer("clinic:req_aux"),    Some(&GridOffer::Request { w: 200, prio: 1 }));
 
-// Safety net: grouped `check_budget` verifies total `bank` grants <= 1600W across all offers!
+// Heterogeneous `Cap<u32>` safety net: `bank` <= 1600W & `grid` `#∞` checked in one pass!
 let view = ResolutionView::new(&sys, &r);
-view.check_budget(|_, b| (b.promiser == "bank").then_some((b.promiser, b.overlap.1)), |_| 1600)?;
+view.check_budget(
+    |_, b| (b.overlap.0 != 0).then_some((b.promiser, Cap::Bounded(b.overlap.1))),
+    |p| if *p == "bank" { Cap::Bounded(1600) } else { Cap::Unbounded },
+)?;
 view.check_agreement(|_, b| (b.overlap.0 != 0).then_some(("site-bus", b.overlap.0)))?;
 let cone = project_sst(&sys).reverse_causal_cone(&SstNode::Promise("clinic:req_aux")); // 11 nodes
 let dir  = directory_of(&sys, &"bank");                                                // 3 int / 4 surf
@@ -838,10 +853,10 @@ Because Baugr imposes no runtime framework or domain schema, teams typically emb
 
 To make the calculus directly usable inside real software systems without sacrificing formal rigor, Baugr follows the *Verification-Guided Development* (VGD) methodology pioneered by AWS Cedar @cutler2024cedar: rather than relying on fragile automated code extraction, we maintain two clean, mirroring artifacts mechanically locked together by differential testing.
 
-- *Formal Kernel (Lean 4):* Four small specification modules mirroring §§3–5 (`Spacetime`, `Promise`, `Projection`, `Law`) and seven proof modules verifying all 33 theorems of @tab-theorems with zero `Mathlib` and zero `sorryAx`, compiled offline into an executable reference oracle.
-- *Executable Library (Rust):* A zero-runtime-dependency, `#![no_std]` (`alloc`), `#![forbid(unsafe_code)]` Rust crate exposing the exact four mathematical modules. Static systems carry zero derivation boilerplate (`R = Infallible` blanket impl), while value-derived promises implement `DeriveAlgebra` over pure-data rules (`Clone + Debug + Eq`, zero heap closures). Structural invariants—acyclic superagent containment, consistent $gamma(3,4)$ node typing, and strict transition admissibility—are enforced at mutation time; `static_upper_bound()` enables universal static law discharge; `lint()` flags dangling references, wrong promisers, polarity mismatches, non-interior checks, permanently null-potent `UnsatisfiableMinCount` bounds, and incomplete-information surface scopes across both `Cond` and `Obs`; and zero-annotation helpers (`check_valency`, `check_budget`, `check_disjoint`, `check_agreement`) keep collective law checks concise.
-- *Closing the Verification Loop via Oracle-Verified DRT:* In production execution, Rust computes minimal strata via Kosaraju's strongly connected component algorithm. Rather than trusting that algorithm blindly, our differential test suite generates *500 randomized stratifiable Promise Systems*—mixing static promises and *value-derived offers/uses* (exercising all four `Obs` kinds with non-monotonic XOR/OR derivation rules), random opaque/transparent hierarchies, bitmask mutual-information overlap, positive dependency cycles, nested `AtLeast` thresholds, *arbitrarily nested negations*, and broken observer-local assessments—and sends each system *together with Rust's computed stratification* to the compiled Lean 4 oracle. On every single case, Lean mechanically executes our proved-sound `checkValidStratification` validator before verifying bit-for-bit agreement between Rust and Lean across all *resolved promise bodies*, active bindings (including exact overlap values), and projected $gamma(3,4)$ edges (`0` divergences across 500/500 cases).
-- *Cross-Domain Validation:* Three self-contained runnable examples exercise the library across unrelated domains—the *Hospital Microgrid* (opaque 2-of-3 emergent capacity, Request–Grant priority allocation, partial residual split vs. strict local diesel failover, grouped `BudgetBy`, and `AgreementBy`), the *Opaque Raft Cluster* (2-of-3 quorum emergence, blocked piercing, light-cone isolation), and *Multi-Tenant Cloud Tenancy* (`Accepted` tenancy, `static_upper_bound()` discharge, simultaneous fleet-wide per-host port disjointness, and Burgess coordination agreement $C(b)$)—alongside an automated purity check confirming zero domain-specific terms or operating-system I/O inside the core library.
+- *Formal Kernel (Lean 4):* Four small specification modules mirroring §§3–5 (`Spacetime`, `Promise`, `Projection`, `Law`) and seven proof modules verifying all 37 theorems of @tab-theorems with zero `Mathlib` and zero `sorryAx`, compiled offline into an executable reference oracle.
+- *Executable Library (Rust):* A zero-runtime-dependency, `#![no_std]` (`alloc`), `#![forbid(unsafe_code)]` Rust crate exposing the exact four mathematical modules. Polarity and static-vs-derived payloads factor cleanly as `Body<Spec<P, O, R>, Spec<P, U, R>>` with canonical deduplicated `BTreeSet<Obs<P>>` observation sets; static systems carry zero derivation boilerplate (`R = Infallible`), while value-derived systems implement `DeriveAlgebra` with optional channel-sharp `may_overlap`. Structural invariants—acyclic non-reparenting superagent containment, consistent $gamma(3,4)$ node typing, and strict transition admissibility—are enforced at mutation time; `StaticUpperBound` + `DownwardClosedLaw` enforce universal static law discharge at compile time; `lint()` flags dangling IDs, wrong promisers, polarity mismatches, non-interior or `OpaqueWallBlocked` references, `UnknownTargetAgent`, permanently null-potent `UnsatisfiableMinCount` bounds across `Assisted`/`Accepted`/`AtLeast`, and incomplete-information surface scopes across both `Cond` and `Obs`; and four orthogonal laws (`BudgetBy` over `Cap<R>`, `DisjointBy`, `AgreementBy`, `CardinalityBy`) with ergonomic shorthands (`check_valency`, `check_budget`, `check_disjoint`, `check_agreement`, `check_quorum`, `check_unique_provider`, plus `discharge_*`) keep collective checks concise.
+- *Closing the Verification Loop via Oracle-Verified DRT:* In production execution, Rust computes minimal strata via Kosaraju's strongly connected component algorithm. Rather than trusting that algorithm blindly, our differential test suite generates *500 randomized stratifiable Promise Systems*—mixing static promises and *value-derived offers/uses* (exercising all four `Obs` kinds with non-monotonic XOR/OR derivation rules and randomized `may_overlap` channel masks), random nested opaque/transparent hierarchies, bitmask mutual-information overlap, positive dependency cycles, nested `AtLeast` thresholds, *arbitrarily nested negations*, and broken observer-local assessments—and sends each system *together with Rust's computed stratification* to the compiled Lean 4 oracle. On every single case, Lean mechanically executes our proved-sound `checkValidStratification` validator before verifying bit-for-bit agreement between Rust and Lean across all *resolved promise bodies*, active bindings (including exact overlap values), projected $gamma(3,4)$ edges, and zero direct `+LeadsTo` crossings across any opaque wall (`0` divergences across 500/500 cases).
+- *Cross-Domain Validation:* Three self-contained runnable examples exercise the library across unrelated domains—the *Hospital Microgrid* (opaque 2-of-3 emergent capacity, Request–Grant priority allocation with `may_overlap`, partial residual split vs. strict local diesel failover, heterogeneous `Cap<u32>` grouped `BudgetBy`, and `AgreementBy`), the *Opaque Raft Cluster* (2-of-3 quorum emergence, blocked piercing, light-cone isolation), and *Multi-Tenant Cloud Tenancy* (`Accepted` tenancy, compile-time `StaticUpperBound` discharge, simultaneous fleet-wide per-host port disjointness, and Burgess coordination agreement $C(b)$)—alongside an automated purity check confirming zero domain-specific terms or operating-system I/O inside the core library.
 
 @tab-lineage records the exact traceability from the seven foundational papers to Baugr's formal definitions.
 
@@ -858,7 +873,7 @@ To make the calculus directly usable inside real software systems without sacrif
       [@bergstra2008static], [Distinct target $T$ vs. visibility scope $sigma$; subjective assessment], [Directed promises; observer-local $alpha$],
       [@bergstra2014impositions], [Two polarities (`+`, `-`); impositions as offers + compliance; $a in sigma$], [`Offer`/`Use` body; Law I (Autonomy)],
       [@burgess2014spacetimes1], [Mutual-information overlap $b_1 inter b_2$; assisted quenching; coordination $C(b)$], [Body algebra; `Assisted`; `AgreementBy`],
-      [@burgess2015spacetimes2], [Valency `+b#n`; opaque/transparent superagents; directories $pi_"directory"$; emergence; functional tenancy $+f(C, R) | -R$; incomplete info], [Ordered monoid valency; `Hierarchy` & Law II; `Interior`/`Accepted`; `DerivedOffer`/`DerivedUse`; complete-info check],
+      [@burgess2015spacetimes2], [Valency `+b#n`; opaque/transparent superagents; directories $pi_"directory"$; emergence; functional tenancy $+f(C, R) | -R$; incomplete info], [`Cap<R>` ordered monoid; `Hierarchy` & Law II; `Interior`/`Accepted`; `Spec::Derived`; complete-info check],
       [@burgess2016spacetimes3], [Four irreducible spacetime axes; multi-condition aggregation], [`LinkKind` ($0, plus.minus 1, plus.minus 2, plus.minus 3$); `AtLeast`],
       [@burgess2025sst], [Strict $gamma(3,4)$ rules 1–2; antisymmetry; Couch/Burgess inference; quotient $bold(G)$], [Strict `SstGraph`; dual cones; `coarse_grain`; $Phi$],
       [@burgess2026quantitative], [Observer-local assessment $alpha_a (pi)$; self & assisted quenching], [Assessment map $alpha$; `Self`; stratified `resolve`],
@@ -868,7 +883,7 @@ To make the calculus directly usable inside real software systems without sacrif
 ) <tab-lineage>
 
 // ============================================================================
-// Section 9
+// Section 10
 // ============================================================================
 
 = Scope Boundaries and Future Directions

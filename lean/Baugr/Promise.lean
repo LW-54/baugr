@@ -63,27 +63,14 @@ structure LocalObs (A P O U M : Type) where
   acceptedUses   : List (P × P × A × U × M)
   interiorBodies : List (P × A × Body O U)
 
-/-- Polarity-preserving promise body specification: either a static body or a
-    value-derived body computed strictly from declared local `Obs` observations. -/
-inductive BodySpec (A P O U M : Type) where
-  | fixedOffer   (o : O)
-  | fixedUse     (u : U)
-  | derivedOffer (obs : List (Obs P)) (produce : LocalObs A P O U M → Option O)
-  | derivedUse   (obs : List (Obs P)) (produce : LocalObs A P O U M → Option U)
+/-- Orthogonal static-vs-derived body specification: polarity lives exclusively on `Body`. -/
+inductive Spec (A P O U M T : Type) where
+  | fixed   (val : T)
+  | derived (obs : List (Obs P)) (produce : LocalObs A P O U M → Option T)
 
-def BodySpec.isOffer {A P O U M : Type} : BodySpec A P O U M → Bool
-  | .fixedOffer _ | .derivedOffer _ _ => true
-  | .fixedUse _   | .derivedUse _ _   => false
-
-def BodySpec.isUse {A P O U M : Type} : BodySpec A P O U M → Bool
-  | .fixedOffer _ | .derivedOffer _ _ => false
-  | .fixedUse _   | .derivedUse _ _   => true
-
-def BodySpec.obs {A P O U M : Type} : BodySpec A P O U M → List (Obs P)
-  | .fixedOffer _       => []
-  | .fixedUse _         => []
-  | .derivedOffer os _  => os
-  | .derivedUse os _    => os
+def Spec.obs {A P O U M T : Type} : Spec A P O U M T → List (Obs P)
+  | .fixed _        => []
+  | .derived os _   => os
 
 /-- Dressed superagent hierarchy with explicit opaque vs. transparent boundary flag (arXiv:1505.01716v1 §3.3-3.7). -/
 structure Hierarchy (A : Type) where
@@ -112,31 +99,48 @@ def noOpaqueWall {A : Type} [DecidableEq A] (h : Hierarchy A) (agents : List A) 
       true
 
 /-- A directed conditional promise with explicit promisee `target`, observability `scope`,
-    static or value-derived body `spec`, and quenching condition `cond`. -/
+    unified polarity/specification `body : Body (Spec ... O) (Spec ... U)`, and condition `cond`. -/
 structure Promise (A P O U M : Type) where
   id       : P
   promiser : A
   target   : AgentSet A
   scope    : AgentSet A
-  spec     : BodySpec A P O U M
+  body     : Body (Spec A P O U M O) (Spec A P O U M U)
   cond     : Cond P
 
 def Promise.isOffer {A P O U M : Type} (pr : Promise A P O U M) : Bool :=
-  pr.spec.isOffer
+  match pr.body with
+  | .offer _ => true
+  | .use   _ => false
 
 def Promise.isUse {A P O U M : Type} (pr : Promise A P O U M) : Bool :=
-  pr.spec.isUse
+  match pr.body with
+  | .offer _ => false
+  | .use   _ => true
+
+def Promise.obs {A P O U M : Type} (pr : Promise A P O U M) : List (Obs P) :=
+  match pr.body with
+  | .offer sp => sp.obs
+  | .use   sp => sp.obs
 
 /-- Effective scope always includes the promiser (arXiv:1401.3381v1 L663). -/
 def inScope {A P O U M : Type} [DecidableEq A] (pr : Promise A P O U M) (obs : A) : Bool :=
   (obs == pr.promiser) || pr.scope obs
 
-/-- Complete Promise System. -/
+/-- Complete Promise System.
+    `ruleCompat` provides optional conservative channel filtering between promise pairs
+    when at least one endpoint is value-derived (defaults to `true`, mirroring Rust's
+    `DeriveAlgebra::may_overlap`). -/
 structure PromiseSystem (A P O U M : Type) where
-  agents    : List A
-  promises  : List (Promise A P O U M)
-  hierarchy : Hierarchy A
-  algebra   : BodyAlgebra O U M
+  agents     : List A
+  promises   : List (Promise A P O U M)
+  hierarchy  : Hierarchy A
+  algebra    : BodyAlgebra O U M
+  ruleCompat : P → P → Bool := fun _ _ => true
+
+/-- Uniqueness of promise identifiers in `sys.promises` (guaranteed by Rust's `BTreeMap`). -/
+def UniqueIds {A P O U M : Type} (sys : PromiseSystem A P O U M) : Prop :=
+  ∀ p₁ ∈ sys.promises, ∀ p₂ ∈ sys.promises, p₁.id = p₂.id → p₁ = p₂
 
 /-- Observer-local Boolean assessment α : Agent × Promise → Bool (ADR-0018 A3; arXiv:2606.08552v1 L1070). -/
 abbrev Assessment (A P : Type) := A → P → Bool
@@ -160,13 +164,14 @@ def structBindable {A P O U M : Type} [DecidableEq A]
   noOpaqueWall sys.hierarchy sys.agents po.promiser pu.promiser
 
 /-- Conservative static bindability for stratification, SST projection, and autonomy:
-    checks exact `overlap` when both bodies are fixed, and `structBindable` when either is derived. -/
+    checks exact `overlap` when both bodies are fixed, and `ruleCompat` when either is derived. -/
 def mayBind {A P O U M : Type} [DecidableEq A]
     (sys : PromiseSystem A P O U M) (po pu : Promise A P O U M) : Bool :=
   if !structBindable sys po pu then false
-  else match po.spec, pu.spec with
-    | .fixedOffer ob, .fixedUse ub => (sys.algebra.overlap ob ub).isSome
-    | _, _                         => true
+  else match po.body, pu.body with
+    | .offer (.fixed ob), .use (.fixed ub) => (sys.algebra.overlap ob ub).isSome
+    | .offer _,           .use _           => sys.ruleCompat po.id pu.id
+    | _,                  _                => false
 
 /-- Runtime mutual-information overlap `b₁ ∩ b₂` under resolved state `S`. -/
 def runtimeOverlap {A P O U M : Type} [DecidableEq A]
@@ -181,9 +186,21 @@ def countP {α : Type} (p : α → Bool) : List α → Nat
   | []      => 0
   | x :: xs => (if p x then 1 else 0) + countP p xs
 
+/-- Deduplicate a list preserving first occurrence (mirrors Rust's `BTreeSet<Obs<P>>` uniqueness). -/
+def dedupList {α : Type} [DecidableEq α] : List α → List α
+  | []      => []
+  | x :: xs => x :: (dedupList xs).filter (fun y => !(y == x))
+
+/-- Direct visible interior relation: `me` strictly contains `sub` with NO intermediate
+    opaque superagent wall separating them (enforces recursive Russian-doll Law II). -/
+def visibleInterior {A : Type} [DecidableEq A]
+    (h : Hierarchy A) (agents : List A) (me sub : A) : Bool :=
+  isStrictAncAux h agents.length me sub && noOpaqueWall h agents me sub
+
 mutual
 /-- Evaluate condition `c` for promiser `me` under resolved state `S` and local assessment `α`.
-    Consistently enforces local self-assessment `α me own` across `SelfPromise`, `Assisted`, and `Accepted`. -/
+    Enforces local self-assessment `α me own` across all observations AND recursive
+    `noOpaqueWall` across `interior`. -/
 def evalCond {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) (α : Assessment A P)
     (S : State P O U) (me : A) : Cond P → Bool
@@ -212,7 +229,7 @@ def evalCond {A P O U M : Type} [DecidableEq A] [DecidableEq P]
   | .interior q =>
       match sys.find? q with
       | some pq =>
-          isStrictAncAux sys.hierarchy sys.agents.length me pq.promiser && (S q).isSome && α me q
+          visibleInterior sys.hierarchy sys.agents me pq.promiser && (S q).isSome && α me q
       | none => false
   | .atLeast k cs =>
       decide (countSat sys α S me cs ≥ k)
@@ -225,18 +242,19 @@ def countSat {A P O U M : Type} [DecidableEq A] [DecidableEq P]
   | c :: rs => (if evalCond sys α S me c then 1 else 0) + countSat sys α S me rs
 end
 
-/-- Constructs the autonomy-grounded local observation snapshot for a derived promise. -/
+/-- Constructs the deduplicated autonomy-grounded local observation snapshot for a derived promise. -/
 def buildLocalObs {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) (α : Assessment A P)
     (S : State P O U) (me : A) (obs : List (Obs P)) : LocalObs A P O U M :=
-  let selfBodies := obs.filterMap fun o =>
+  let uobs := dedupList obs
+  let selfBodies := uobs.filterMap fun o =>
     match o with
     | .selfPromise q =>
         match sys.find? q, S q with
         | some pq, some b => if pq.promiser == me && α me q then some (q, b) else none
         | _, _ => none
     | _ => none
-  let assistedOffers := obs.flatMap fun o =>
+  let assistedOffers := uobs.flatMap fun o =>
     match o with
     | .assisted u =>
         match sys.find? u, S u with
@@ -250,7 +268,7 @@ def buildLocalObs {A P O U M : Type} [DecidableEq A] [DecidableEq P]
             else []
         | _, _ => []
     | _ => []
-  let acceptedUses := obs.flatMap fun o =>
+  let acceptedUses := uobs.flatMap fun o =>
     match o with
     | .accepted oid =>
         match sys.find? oid, S oid with
@@ -264,12 +282,12 @@ def buildLocalObs {A P O U M : Type} [DecidableEq A] [DecidableEq P]
             else []
         | _, _ => []
     | _ => []
-  let interiorBodies := obs.filterMap fun o =>
+  let interiorBodies := uobs.filterMap fun o =>
     match o with
     | .interior q =>
         match sys.find? q, S q with
         | some pq, some b =>
-            if isStrictAncAux sys.hierarchy sys.agents.length me pq.promiser && α me q then
+            if visibleInterior sys.hierarchy sys.agents me pq.promiser && α me q then
               some (q, pq.promiser, b)
             else none
         | _, _ => none
@@ -280,12 +298,12 @@ def buildLocalObs {A P O U M : Type} [DecidableEq A] [DecidableEq P]
 def evalRule {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) (α : Assessment A P)
     (S : State P O U) (pr : Promise A P O U M) : Option (Body O U) :=
-  match pr.spec with
-  | .fixedOffer o => some (.offer o)
-  | .fixedUse u   => some (.use u)
-  | .derivedOffer obs produce =>
+  match pr.body with
+  | .offer (.fixed o) => some (.offer o)
+  | .use   (.fixed u) => some (.use u)
+  | .offer (.derived obs produce) =>
       (produce (buildLocalObs sys α S pr.promiser obs)).map .offer
-  | .derivedUse obs produce =>
+  | .use   (.derived obs produce) =>
       (produce (buildLocalObs sys α S pr.promiser obs)).map .use
 
 /-- One-step value-carrying quenching operator T(S). -/
@@ -306,7 +324,7 @@ def StateLe {P O U : Type} (S₁ S₂ : State P O U) : Prop :=
 
 /-- A positive single-stratum system has positive conditions and no `Obs` value-derivation barriers. -/
 def PositiveSystem {A P O U M : Type} (sys : PromiseSystem A P O U M) : Prop :=
-  ∀ pr ∈ sys.promises, pr.cond.isPositive ∧ pr.spec.obs = []
+  ∀ pr ∈ sys.promises, pr.cond.isPositive ∧ pr.obs = []
 
 /-- Iterate quenching from empty state `⊥` (`fun _ => none`) for `n` steps (Knaster-Tarski). -/
 def quenchIter {A P O U M : Type} [DecidableEq A] [DecidableEq P]
@@ -315,54 +333,76 @@ def quenchIter {A P O U M : Type} [DecidableEq A] [DecidableEq P]
   | n + 1 => quenchStep sys α (quenchIter sys α n)
 
 mutual
-/-- Syntactic condition dependencies `(depId, isStrict)` (`true` for negated edges). -/
+/-- Exact autonomy- & boundary-guarded syntactic condition dependencies `(depId, isStrict)`.
+    Structurally dead references (wrong promiser, wrong polarity, or blocked by an opaque wall)
+    emit zero phantom causal edges in `Φ(S)`. -/
 def condDeps {A P O U M : Type} [DecidableEq A] [DecidableEq P]
-    (sys : PromiseSystem A P O U M) (neg : Bool) : Cond P → List (P × Bool)
-  | .selfPromise q => [(q, neg)]
+    (sys : PromiseSystem A P O U M) (me : A) (neg : Bool) : Cond P → List (P × Bool)
+  | .selfPromise q =>
+      match sys.find? q with
+      | some pq => if pq.promiser == me then [(q, neg)] else []
+      | none    => []
   | .assisted u _  =>
       match sys.find? u with
       | some pu =>
-          (u, neg) :: (sys.promises.filter (fun po => mayBind sys po pu)).map (fun po => (po.id, neg))
-      | none => [(u, neg)]
+          if pu.promiser == me && pu.isUse then
+            (u, neg) :: (sys.promises.filter (fun po => mayBind sys po pu)).map (fun po => (po.id, neg))
+          else []
+      | none => []
   | .accepted o _  =>
       match sys.find? o with
       | some po =>
-          (o, neg) :: (sys.promises.filter (fun pu => mayBind sys po pu && inScope pu po.promiser)).map (fun pu => (pu.id, neg))
-      | none => [(o, neg)]
-  | .interior q    => [(q, neg)]
-  | .atLeast _ cs  => listCondDeps sys neg cs
-  | .not c         => condDeps sys (!neg) c
+          if po.promiser == me && po.isOffer then
+            (o, neg) :: (sys.promises.filter (fun pu => mayBind sys po pu && inScope pu me)).map (fun pu => (pu.id, neg))
+          else []
+      | none => []
+  | .interior q    =>
+      match sys.find? q with
+      | some pq => if visibleInterior sys.hierarchy sys.agents me pq.promiser then [(q, neg)] else []
+      | none    => []
+  | .atLeast _ cs  => listCondDeps sys me neg cs
+  | .not c         => condDeps sys me (!neg) c
 
 def listCondDeps {A P O U M : Type} [DecidableEq A] [DecidableEq P]
-    (sys : PromiseSystem A P O U M) (neg : Bool) : List (Cond P) → List (P × Bool)
+    (sys : PromiseSystem A P O U M) (me : A) (neg : Bool) : List (Cond P) → List (P × Bool)
   | []      => []
-  | c :: rs => condDeps sys neg c ++ listCondDeps sys neg rs
+  | c :: rs => condDeps sys me neg c ++ listCondDeps sys me neg rs
 end
 
-/-- Value-observation dependencies (every `Obs` entry is a strict stratum barrier `isStrict = true`). -/
+/-- Exact autonomy- & boundary-guarded value-observation dependencies (`isStrict = true`). -/
 def obsEntryDeps {A P O U M : Type} [DecidableEq A] [DecidableEq P]
-    (sys : PromiseSystem A P O U M) : Obs P → List (P × Bool)
-  | .selfPromise q => [(q, true)]
-  | .interior q    => [(q, true)]
+    (sys : PromiseSystem A P O U M) (me : A) : Obs P → List (P × Bool)
+  | .selfPromise q =>
+      match sys.find? q with
+      | some pq => if pq.promiser == me then [(q, true)] else []
+      | none    => []
+  | .interior q    =>
+      match sys.find? q with
+      | some pq => if visibleInterior sys.hierarchy sys.agents me pq.promiser then [(q, true)] else []
+      | none    => []
   | .assisted u    =>
       match sys.find? u with
       | some pu =>
-          (u, true) :: (sys.promises.filter (fun po => mayBind sys po pu)).map (fun po => (po.id, true))
-      | none => [(u, true)]
+          if pu.promiser == me && pu.isUse then
+            (u, true) :: (sys.promises.filter (fun po => mayBind sys po pu)).map (fun po => (po.id, true))
+          else []
+      | none => []
   | .accepted o    =>
       match sys.find? o with
       | some po =>
-          (o, true) :: (sys.promises.filter (fun pu => mayBind sys po pu && inScope pu po.promiser)).map (fun pu => (pu.id, true))
-      | none => [(o, true)]
+          if po.promiser == me && po.isOffer then
+            (o, true) :: (sys.promises.filter (fun pu => mayBind sys po pu && inScope pu me)).map (fun pu => (pu.id, true))
+          else []
+      | none => []
 
 def obsDeps {A P O U M : Type} [DecidableEq A] [DecidableEq P]
-    (sys : PromiseSystem A P O U M) (obs : List (Obs P)) : List (P × Bool) :=
-  obs.flatMap (obsEntryDeps sys)
+    (sys : PromiseSystem A P O U M) (me : A) (obs : List (Obs P)) : List (P × Bool) :=
+  obs.flatMap (obsEntryDeps sys me)
 
 /-- Complete dependency list `(depId, isStrict)` of a promise (`condDeps` ++ `obsDeps`). -/
 def promiseDeps {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) (pr : Promise A P O U M) : List (P × Bool) :=
-  condDeps sys false pr.cond ++ obsDeps sys pr.spec.obs
+  condDeps sys pr.promiser false pr.cond ++ obsDeps sys pr.promiser pr.obs
 
 /-- Valid stratification: positive `Cond` deps satisfy `rank dep ≤ rank p`;
     negated `Cond` deps and all `Obs` value-derivation deps satisfy `rank dep < rank p`. -/

@@ -110,6 +110,18 @@ impl LinkKind {
             }
         }
     }
+
+    /// Returns `true` if a node of meta-type `kind` can legally participate as either
+    /// source or destination on `axis` under strict γ(3,4) rules.
+    #[must_use]
+    pub const fn allows_node(kind: NodeKind, axis: Self) -> bool {
+        Self::allowed(kind, axis, NodeKind::Event)
+            || Self::allowed(kind, axis, NodeKind::Thing)
+            || Self::allowed(kind, axis, NodeKind::Concept)
+            || Self::allowed(NodeKind::Event, axis, kind)
+            || Self::allowed(NodeKind::Thing, axis, kind)
+            || Self::allowed(NodeKind::Concept, axis, kind)
+    }
 }
 
 /// A directed typed edge in a Semantic Spacetime γ(3,4) graph.
@@ -326,9 +338,12 @@ impl<N: Ord + Clone> SstGraph<N> {
     }
 
     /// Computes reflexive reachability from `start` along `axis` in `O(V + E)` time,
-    /// honoring dual inverse links.
+    /// honoring dual inverse links. Returns an empty set if `start` is not registered.
     #[must_use]
     pub fn reachable_along(&self, start: &N, axis: LinkKind, reverse: bool) -> BTreeSet<N> {
+        if !self.nodes.contains_key(start) {
+            return BTreeSet::new();
+        }
         let mut adj: BTreeMap<&N, Vec<&N>> = BTreeMap::new();
         for (u, v) in self.axis_edges(axis) {
             if reverse {
@@ -355,7 +370,8 @@ impl<N: Ord + Clone> SstGraph<N> {
         visited
     }
 
-    /// Source nodes on a directed axis (in-degree `0`, `arXiv:2506.07756v2` §4.2 & §5.3).
+    /// Source nodes on a directed axis (in-degree `0` among nodes whose [`NodeKind`] can
+    /// legally participate in `axis`, `arXiv:2506.07756v2` §4.2 & §5.3).
     #[must_use]
     pub fn sources(&self, axis: LinkKind) -> BTreeSet<N> {
         let has_in: BTreeSet<&N> = self
@@ -364,13 +380,14 @@ impl<N: Ord + Clone> SstGraph<N> {
             .map(|(_, dst)| dst)
             .collect();
         self.nodes
-            .keys()
-            .filter(|n| !has_in.contains(n))
-            .cloned()
+            .iter()
+            .filter(|(n, k)| LinkKind::allows_node(**k, axis) && !has_in.contains(n))
+            .map(|(n, _)| n.clone())
             .collect()
     }
 
-    /// Absorbing sink nodes on a directed axis (out-degree `0`, `arXiv:2506.07756v2` §4.2 & §5.3).
+    /// Absorbing sink nodes on a directed axis (out-degree `0` among nodes whose [`NodeKind`]
+    /// can legally participate in `axis`, `arXiv:2506.07756v2` §4.2 & §5.3).
     #[must_use]
     pub fn sinks(&self, axis: LinkKind) -> BTreeSet<N> {
         let has_out: BTreeSet<&N> = self
@@ -379,9 +396,9 @@ impl<N: Ord + Clone> SstGraph<N> {
             .map(|(src, _)| src)
             .collect();
         self.nodes
-            .keys()
-            .filter(|n| !has_out.contains(n))
-            .cloned()
+            .iter()
+            .filter(|(n, k)| LinkKind::allows_node(**k, axis) && !has_out.contains(n))
+            .map(|(n, _)| n.clone())
             .collect()
     }
 

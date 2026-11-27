@@ -1,9 +1,10 @@
-//! Multi-tenant cloud host tenancy with static upper-bound discharge (`static_upper_bound`),
-//! simultaneous per-host port disjointness (`DisjointBy`), and fleet protocol agreement (`AgreementBy`).
+//! Multi-tenant cloud host tenancy with type-safe static upper-bound discharge
+//! (`StaticUpperBound::discharge_*`), simultaneous per-host port disjointness (`DisjointBy`),
+//! and fleet protocol agreement (`AgreementBy`).
 //!
 //! Run with: `cargo run --example tenancy`
 
-use baugr::{AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView};
+use baugr::{AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Svc {
@@ -103,16 +104,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ));
 
-    // Static upper-bound discharge (Lean theorem `static_discharge_universal`):
-    // passing downward-closed laws on `B_max(S)` proves them for ALL runtime scenarios α!
+    // Type-safe static upper-bound discharge (Lean theorem `static_discharge_universal`):
+    // `StaticUpperBound` ONLY accepts `DownwardClosedLaw`s, proving them for ALL runtime α!
     let upper = sys.static_upper_bound();
-    let static_view = ResolutionView::new(&sys, &upper);
-    static_view.check_disjoint(|sys, b| {
+    upper.discharge_disjoint(|sys, b| {
         let port = b.overlap.0?;
         let host = sys.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
         Some((host, port))
     })?;
-    static_view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))?;
+    upper.discharge_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))?;
 
     let resolved = sys.resolve_optimistic()?;
     println!(
