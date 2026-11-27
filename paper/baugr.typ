@@ -41,10 +41,13 @@
   width: 100%,
   fill: luma(248),
   stroke: (left: 2pt + rgb("#1f4e79"), rest: 0.4pt + luma(220)),
-  inset: (x: 8pt, y: 6pt),
+  inset: (x: 8pt, y: 5pt),
   radius: 2pt,
-  breakable: false,
-  text(size: 7.7pt, it),
+  breakable: true,
+  {
+    set par(leading: 0.45em)
+    text(size: 7.3pt, it)
+  },
 )
 #show raw.where(block: false): text.with(size: 8.6pt)
 
@@ -712,12 +715,12 @@ $ "bank" arrow.r^(+C) \{"cell"_1, "cell"_2, "cell"_3\} quad ("opaque"), \
   "bank" arrow.r^(+(230"V", 1500"W") | not "Assisted"("sense") and "AtLeast"(2, ["Interior"("chg"_1..3)])) *, \
   "bank" arrow.r^(+"audit" | "Accepted"("backup")) *, quad "hosp" arrow.r^(-(230"V", 1000"W")) \{"grid", "bank"\}, quad "hosp" arrow.r^(-(230"V", 500"W")) "cell"_1. $
 
-Below is the direct, verified Rust realization exercising superagents, opaque boundaries, distinct target vs. visibility scope, emergent quorum + failover negation, `Accepted` tenancy, static `lint()`, observer-local blackout + internal fault absorption, `check_valency` + `check_agreement`, reverse light cones $J^-$, and `directory_of`:
+Below is the direct, verified Rust realization exercising superagents, opaque boundaries, distinct target vs. visibility scope, emergent quorum + failover negation, `Accepted` tenancy, static `lint()`, observer-local blackout + internal fault absorption, aggregate overdraw detection (`ValencyDeficit`) + voluntary load shedding, `check_agreement`, reverse light cones $J^-$, and `directory_of`:
 
 ```rust
 use baugr::{
     AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView, SstNode,
-    directory_of, project_sst,
+    ValencyDeficit, directory_of, project_sst,
 };
 
 struct PowerOffer { voltage: u16, max_watts: u32 }
@@ -728,7 +731,7 @@ impl BodyAlgebra for GridAlgebra {
     type Overlap = (u16, u32);                      // agreed (voltage, watts)
     fn overlap(&self, o: &PowerOffer, u: &PowerUse) -> Option<Self::Overlap> {
         if o.voltage != u.voltage { return None; }
-        (u.watts <= o.max_watts).then_some((o.voltage, u.watts))
+        (u.watts <= o.max_watts).then_some((o.voltage, u.watts)) // rejects single load > max
     }
 }
 
@@ -776,14 +779,28 @@ sys.add_promise(Promise::accept(
 ));                                                 // piercing cell1 -> blocked by Law II
 
 assert!(sys.lint().is_empty());                     // 0 static warnings
-// Local blackout at `bank` + internal `cell1` crash -> 2-of-3 quorum absorbs failure:
-let outage = sys.resolve(|obs, p| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg")))?;
+let blackout = |obs: &&str, p: &&str| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg"));
+let outage = sys.resolve(blackout)?;                // local blackout + cell1 crash absorbed
 assert!(outage.quenched.contains("bank:backup") && outage.quenched.contains("bank:audit"));
 assert!(!outage.bindings.iter().any(|b| b.use_id == "hosp:pierce"));
 
 let view = ResolutionView::new(&sys, &outage);
-view.check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;   // 1000W <= 1500W budget
+view.check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;   // 1000W <= 1500W OK
 view.check_agreement(|_, b| Some(("site-bus", b.overlap.0)))?;   // all bindings agree on 230V
+
+// Aggregate overdraw: adding an 800W clinic exceeds 1500W (1000 + 800 = 1800W):
+sys.add_promise(Promise::accept(
+    "clinic:draw", "clinic", AgentSet::single("bank"), PowerUse { voltage: 230, watts: 800 },
+));
+let over = sys.resolve(blackout)?;
+assert_eq!(
+    ResolutionView::new(&sys, &over).check_valency("bank:backup", 1500_u32, |b| b.overlap.1),
+    Err(ValencyDeficit { offer_id: "bank:backup", used: 1800, capacity: 1500 }),
+);
+// Voluntary load shedding restores valency (guaranteed safe by `valency_withdrawal_safe`):
+let shed = sys.resolve(|obs, p| blackout(obs, p) && !(*obs == "clinic" && *p == "bank:backup"))?;
+ResolutionView::new(&sys, &shed).check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;
+
 let cone = project_sst(&sys).reverse_causal_cone(&SstNode::Promise("bank:backup")); // 6 nodes
 let dir  = directory_of(&sys, &"bank");                          // 3 interior, 3 surface
 ```

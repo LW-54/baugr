@@ -145,7 +145,7 @@ fn build_microgrid()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sys = build_microgrid()?;
+    let mut sys = build_microgrid()?;
     let warnings = sys.lint();
     if !warnings.is_empty() {
         return Err(format!("unexpected lint warnings: {warnings:?}").into());
@@ -156,14 +156,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let healthy_pierced = healthy.bindings.iter().any(|b| b.use_id == "hosp:pierce");
 
     // Local blackout at `bank` + internal `cell1` crash (2-of-3 quorum survives!).
-    let outage =
-        sys.resolve(|obs, p| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg")))?;
+    let blackout =
+        |obs: &&str, p: &&str| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg"));
+    let outage = sys.resolve(blackout)?;
     let outage_pierced = outage.bindings.iter().any(|b| b.use_id == "hosp:pierce");
 
-    // Collective laws: 1500W monoidal valency + 230V site-wide agreement C(b).
+    // Collective laws: 1000W <= 1500W valency OK + 230V site-wide agreement C(b) OK.
     let view = ResolutionView::new(&sys, &outage);
     view.check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;
     view.check_agreement(|_, b| Some(("site-bus", b.overlap.0)))?;
+
+    // Limited resources & overdraw handling:
+    // 1) A single oversized demand (2000W > 1500W) is rejected bilaterally by `BodyAlgebra::overlap`.
+    // 2) Adding a second individually valid load (`clinic`, 800W) pushes aggregate load to
+    //    1000W + 800W = 1800W > 1500W -> caught as typed `ValencyDeficit`!
+    sys.add_promise(Promise::accept(
+        "furnace:draw",
+        "furnace",
+        AgentSet::single("bank"),
+        PowerUse {
+            voltage: 230,
+            watts: 2000,
+        },
+    ));
+    sys.add_promise(Promise::accept(
+        "clinic:draw",
+        "clinic",
+        AgentSet::single("bank"),
+        PowerUse {
+            voltage: 230,
+            watts: 800,
+        },
+    ));
+    let overloaded = sys.resolve(blackout)?;
+    let furnace_bound = overloaded
+        .bindings
+        .iter()
+        .any(|b| b.use_id == "furnace:draw");
+    let deficit = ResolutionView::new(&sys, &overloaded)
+        .check_valency("bank:backup", 1500_u32, |b| b.overlap.1)
+        .err()
+        .ok_or("expected ValencyDeficit on 1800W > 1500W overdraw")?;
+
+    // Voluntary load shedding: clinic withdraws from `bank:backup`, restoring valency
+    // (guaranteed safe by Lean theorem `valency_withdrawal_safe`).
+    let shed =
+        sys.resolve(|obs, p| blackout(obs, p) && !(*obs == "clinic" && *p == "bank:backup"))?;
+    ResolutionView::new(&sys, &shed).check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;
 
     // Semantic Spacetime γ(3,4) reverse light cone & superagent directory.
     let sst = project_sst(&sys);
@@ -171,18 +210,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = directory_of(&sys, &"bank");
 
     println!(
-        "Healthy: backup_active={}, pierce_blocked={}",
+        "Healthy:  backup_active={}, pierce_blocked={}",
         healthy.quenched.contains("bank:backup"),
         !healthy_pierced,
     );
     println!(
-        "Outage:  backup_active={}, audit_active={}, pierce_blocked={}, J^-(backup)={} nodes, bank dir={} interior/{} surface",
+        "Outage:   backup_active={}, audit_active={}, pierce_blocked={}, J^-(backup)={} nodes, bank dir={} interior/{} surface",
         outage.quenched.contains("bank:backup"),
         outage.quenched.contains("bank:audit"),
         !outage_pierced,
         cone.len(),
         dir.interior_promises.len(),
         dir.surface_promises.len(),
+    );
+    println!(
+        "Overdraw: 2000W furnace bound={furnace_bound}; {deficit} -> shed clinic -> 1000W <= 1500W OK"
     );
     Ok(())
 }
