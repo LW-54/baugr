@@ -1,0 +1,60 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "paper/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v17
+      - uses: DeterminateSystems/magic-nix-cache-action@v12
+      - name: Build paper PDF via Nix
+        run: |
+          nix build .#paper -o result-paper
+          mkdir -p _site
+          cp result-paper/baugr.pdf _site/baugr.pdf
+          cat > _site/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url=baugr.pdf">
+            <title>Baugr — Paper</title>
+          </head>
+          <body>
+            <p>Redirecting to <a href="baugr.pdf">Baugr: A Formally Verified Algebra of Voluntary Coordination in Semantic Spacetime (PDF)</a>.</p>
+          </body>
+          </html>
+          EOF
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

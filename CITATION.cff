@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: "Baugr: A Formally Verified Algebra of Voluntary Coordination in Semantic Spacetime"
+message: "If you use Baugr or reference its formal proofs, please cite this work."
+type: software
+authors:
+  - alias: LW-54
+repository-code: "https://github.com/LW-54/baugr"
+url: "https://lw-54.github.io/baugr/baugr.pdf"
+license: MIT
+version: "0.2.0"
+date-released: "2026-11-27"
+keywords:
+  - promise-theory
+  - semantic-spacetime
+  - formal-verification
+  - lean4
+  - rust
