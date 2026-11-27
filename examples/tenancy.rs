@@ -3,10 +3,7 @@
 //!
 //! Run with: `cargo run --example tenancy`
 
-use baugr::{
-    AgentSet, AgreementBy, Binding, BodyAlgebra, Cond, DisjointBy, Promise, PromiseSystem,
-    ResolutionView,
-};
+use baugr::{AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Svc {
@@ -109,23 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = sys.resolve_optimistic()?;
     let view = ResolutionView::new(&sys, &resolved);
 
-    // Verify per-host port disjointness across ALL hosts in one pass:
-    view.check(&DisjointBy::new(
-        |sys: &PromiseSystem<&'static str, &'static str, CloudAlg>,
-         b: &Binding<&'static str, &'static str, (Option<u16>, Option<u8>)>| {
-            let port = b.overlap.0?;
-            let host = sys.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
-            Some((host, port))
-        },
-    ))?;
+    // Verify per-host port disjointness across ALL hosts in one pass (zero type annotations!):
+    view.check_disjoint(|sys, b| {
+        let port = b.overlap.0?;
+        let host = sys.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
+        Some((host, port))
+    })?;
 
     // Verify fleet-wide protocol version agreement C(b):
-    view.check(&AgreementBy::new(
-        |_: &PromiseSystem<&'static str, &'static str, CloudAlg>,
-         b: &Binding<&'static str, &'static str, (Option<u16>, Option<u8>)>| {
-            b.overlap.1.map(|ver| ((), ver))
-        },
-    ))?;
+    view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))?;
 
     println!(
         "Tenancy verified: {} promises quenched, {} active bindings.",

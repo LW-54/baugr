@@ -7,7 +7,7 @@ use core::fmt;
 
 use super::cond::Cond;
 use super::hierarchy::{Hierarchy, HierarchyError};
-use super::{Body, BodyAlgebra, IncompleteInfoWarning, Promise, PromiseMap};
+use super::{Body, BodyAlgebra, ConditionWarning, IncompleteInfoWarning, Promise, PromiseMap};
 
 /// Precomputed static offer↔use compatibility index for a [`PromiseSystem`].
 ///
@@ -125,9 +125,15 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
     }
 
     /// Inserts a promise into the system (also registering its promiser).
-    pub fn add_promise(&mut self, promise: Promise<A, P, D::Offer, D::Use>) {
+    ///
+    /// Returns the previously registered promise with the same identifier, if any,
+    /// so accidental duplicate IDs are never silently lost.
+    pub fn add_promise(
+        &mut self,
+        promise: Promise<A, P, D::Offer, D::Use>,
+    ) -> Option<Promise<A, P, D::Offer, D::Use>> {
         self.hierarchy.add_agent(promise.promiser.clone());
-        self.promises.insert(promise.id.clone(), promise);
+        self.promises.insert(promise.id.clone(), promise)
     }
 
     /// Returns all registered agents.
@@ -219,6 +225,112 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
             offers_for_use,
             uses_for_offer,
             visible_uses_for_offer,
+        }
+    }
+
+    /// Static diagnostic pass checking every condition formula for dangling
+    /// references, autonomy/promiser mismatches, polarity mismatches, non-interior
+    /// superagent references, and incomplete promise information.
+    #[must_use]
+    pub fn lint(&self) -> Vec<ConditionWarning<A, P>> {
+        let mut out = Vec::new();
+        for pr in self.promises.values() {
+            self.lint_cond(&pr.id, &pr.promiser, &pr.cond, &mut out);
+        }
+        for w in self.check_complete_information() {
+            out.push(ConditionWarning::IncompleteInformation(w));
+        }
+        out
+    }
+
+    fn lint_cond(
+        &self,
+        pid: &P,
+        promiser: &A,
+        cond: &Cond<P>,
+        out: &mut Vec<ConditionWarning<A, P>>,
+    ) {
+        match cond {
+            Cond::SelfPromise(q) => match self.promises.get(q) {
+                None => out.push(ConditionWarning::DanglingRef {
+                    promise: pid.clone(),
+                    referenced: q.clone(),
+                }),
+                Some(pq) if &pq.promiser != promiser => out.push(ConditionWarning::WrongPromiser {
+                    promise: pid.clone(),
+                    referenced: q.clone(),
+                    expected: promiser.clone(),
+                    actual: pq.promiser.clone(),
+                }),
+                Some(_) => {}
+            },
+            Cond::Assisted { use_id, .. } => match self.promises.get(use_id) {
+                None => out.push(ConditionWarning::DanglingRef {
+                    promise: pid.clone(),
+                    referenced: use_id.clone(),
+                }),
+                Some(pu) => {
+                    if &pu.promiser != promiser {
+                        out.push(ConditionWarning::WrongPromiser {
+                            promise: pid.clone(),
+                            referenced: use_id.clone(),
+                            expected: promiser.clone(),
+                            actual: pu.promiser.clone(),
+                        });
+                    }
+                    if !pu.is_use() {
+                        out.push(ConditionWarning::WrongPolarity {
+                            promise: pid.clone(),
+                            referenced: use_id.clone(),
+                            expected_offer: false,
+                        });
+                    }
+                }
+            },
+            Cond::Accepted { offer_id, .. } => match self.promises.get(offer_id) {
+                None => out.push(ConditionWarning::DanglingRef {
+                    promise: pid.clone(),
+                    referenced: offer_id.clone(),
+                }),
+                Some(po) => {
+                    if &po.promiser != promiser {
+                        out.push(ConditionWarning::WrongPromiser {
+                            promise: pid.clone(),
+                            referenced: offer_id.clone(),
+                            expected: promiser.clone(),
+                            actual: po.promiser.clone(),
+                        });
+                    }
+                    if !po.is_offer() {
+                        out.push(ConditionWarning::WrongPolarity {
+                            promise: pid.clone(),
+                            referenced: offer_id.clone(),
+                            expected_offer: true,
+                        });
+                    }
+                }
+            },
+            Cond::Interior(q) => match self.promises.get(q) {
+                None => out.push(ConditionWarning::DanglingRef {
+                    promise: pid.clone(),
+                    referenced: q.clone(),
+                }),
+                Some(pq) if !self.hierarchy.is_strict_ancestor(promiser, &pq.promiser) => {
+                    out.push(ConditionWarning::NonInteriorRef {
+                        promise: pid.clone(),
+                        referenced: q.clone(),
+                        superagent: promiser.clone(),
+                        actual_promiser: pq.promiser.clone(),
+                    });
+                }
+                Some(_) => {}
+            },
+            Cond::AtLeast(_, cs) => {
+                for c in cs {
+                    self.lint_cond(pid, promiser, c, out);
+                }
+            }
+            Cond::Not(c) => self.lint_cond(pid, promiser, c, out),
         }
     }
 

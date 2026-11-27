@@ -2,9 +2,7 @@
 //!
 //! Run with: `cargo run --example microgrid`
 
-use baugr::{
-    AgentSet, Binding, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView, ValencyLaw,
-};
+use baugr::{AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView};
 
 #[derive(Clone, Debug)]
 struct PowerOffer {
@@ -85,12 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let outage = sys.resolve(|_, p| *p != "grid:mains")?;
-    let valency = ValencyLaw {
-        offer_id: "bat:backup",
-        capacity: 1500_u32,
-        weight: |b: &Binding<&str, &str, u32>| b.overlap,
-    };
-    ResolutionView::new(&sys, &outage).check(&valency)?;
+    ResolutionView::new(&sys, &outage).check_valency("bat:backup", 1500_u32, |b| b.overlap)?;
     println!(
         "Outage:  backup active, hospital draws {}W <= 1500W capacity",
         outage

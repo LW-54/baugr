@@ -277,6 +277,55 @@ pub struct IncompleteInfoWarning<A, P> {
     pub blind_target: A,
 }
 
+/// Static diagnostic warning emitted by [`PromiseSystem::lint`] for conditions
+/// that are syntactically well-typed yet structurally vacuous or scope-incomplete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConditionWarning<A, P> {
+    /// Condition references a promise identifier not registered in the system.
+    DanglingRef {
+        /// Promise containing the condition.
+        promise: P,
+        /// Missing referenced promise identifier.
+        referenced: P,
+    },
+    /// Local condition (`SelfPromise`, `Assisted`, `Accepted`) references a promise
+    /// owned by a different agent (always evaluates `false` by autonomy).
+    WrongPromiser {
+        /// Promise containing the condition.
+        promise: P,
+        /// Referenced promise identifier.
+        referenced: P,
+        /// Promiser of `promise`.
+        expected: A,
+        /// Actual promiser of `referenced`.
+        actual: A,
+    },
+    /// `Assisted` references an `Offer` (expected `Use`), or `Accepted` references
+    /// a `Use` (expected `Offer`).
+    WrongPolarity {
+        /// Promise containing the condition.
+        promise: P,
+        /// Referenced promise identifier.
+        referenced: P,
+        /// `true` if an `Offer` was expected (`Accepted`); `false` if a `Use` was expected (`Assisted`).
+        expected_offer: bool,
+    },
+    /// `Interior` references a promise whose promiser is not strictly contained
+    /// inside this superagent.
+    NonInteriorRef {
+        /// Superagent promise containing the `Interior` condition.
+        promise: P,
+        /// Referenced promise identifier.
+        referenced: P,
+        /// Superagent promiser.
+        superagent: A,
+        /// Actual promiser of `referenced`.
+        actual_promiser: A,
+    },
+    /// Incomplete promise information: a target cannot observe an assisting `Use`.
+    IncompleteInformation(IncompleteInfoWarning<A, P>),
+}
+
 /// Result of resolving a [`PromiseSystem`] under an observer-local assessment `α(a, π)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved<A, P, M> {

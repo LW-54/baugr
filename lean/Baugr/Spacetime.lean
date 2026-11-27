@@ -69,11 +69,16 @@ structure SstGraph (N : Type) where
 def SstGraph.WellFormed {N : Type} (g : SstGraph N) : Prop :=
   ∀ e ∈ g.edges, allowed (g.kindOf e.src) e.kind (g.kindOf e.dst) = true
 
-/-- Directed causal reachability along `+LeadsTo` edges in an SST graph. -/
+/-- Normalized directed edge relation honoring γ(3,4) link inversion
+    (`u --r--> v` directly, or `v --r⁻¹--> u` via its algebraic converse). -/
+def SstGraph.hasEdge {N : Type} (g : SstGraph N) (u : N) (r : LinkKind) (v : N) : Prop :=
+  SstEdge.mk u r v ∈ g.edges ∨ SstEdge.mk v r.inv u ∈ g.edges
+
+/-- Directed causal reachability along normalized `+LeadsTo` edges (honoring dual `-Follows`). -/
 inductive CausalReach {N : Type} (g : SstGraph N) : N → N → Prop where
   | refl (x : N) : CausalReach g x x
   | step {x y z : N} :
-      SstEdge.mk x .leadsTo y ∈ g.edges →
+      g.hasEdge x .leadsTo y →
       CausalReach g y z →
       CausalReach g x z
 

@@ -141,7 +141,7 @@ fn gen_cond(
             num_promises,
             sys,
             depth.saturating_sub(1),
-            false,
+            allow_neg,
         ),
     }
 }

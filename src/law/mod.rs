@@ -5,10 +5,7 @@
 //!
 //! # Example
 //! ```
-//! use baugr::{
-//!     AgentSet, Binding, DisjointBy, Promise, PromiseSystem, ResolutionView, SymmetricMeet,
-//!     ValencyLaw,
-//! };
+//! use baugr::{AgentSet, Promise, PromiseSystem, ResolutionView, SymmetricMeet};
 //!
 //! let mut sys = PromiseSystem::new(SymmetricMeet::new(|o: &u32, u: &u32| (*u <= *o).then_some(*u)));
 //! sys.add_promise(Promise::offer("psu", "mains", AgentSet::All, 100));
@@ -18,21 +15,13 @@
 //! let resolved = sys.resolve_optimistic().unwrap();
 //! let view = ResolutionView::new(&sys, &resolved);
 //!
-//! // 60 + 50 = 110 > 100 triggers a typed ValencyDeficit.
-//! let deficit = view.check(&ValencyLaw {
-//!     offer_id: "psu",
-//!     capacity: 100_u32,
-//!     weight: |b: &Binding<_, _, u32>| b.overlap,
-//! }).unwrap_err();
+//! // 60 + 50 = 110 > 100 triggers a typed ValencyDeficit (zero type annotations needed!).
+//! let deficit = view.check_valency("psu", 100_u32, |b| b.overlap).unwrap_err();
 //! assert_eq!(deficit.used, 110);
 //!
-//! // DisjointBy checks pairwise uniqueness across arbitrary extracted keys.
-//! assert!(
-//!     view.check(&DisjointBy::new(
-//!         |_: &PromiseSystem<_, _, _>, b: &Binding<_, _, _>| Some(b.consumer)
-//!     ))
-//!     .is_ok()
-//! );
+//! // Pairwise disjointness & grouped agreement infer closure types directly:
+//! assert!(view.check_disjoint(|_, b| Some(b.consumer)).is_ok());
+//! assert!(view.check_agreement(|_, b| Some(((), b.promiser))).is_ok());
 //! ```
 
 mod monoid;
@@ -40,7 +29,7 @@ mod standard;
 
 use core::fmt;
 
-use crate::promise::{BodyAlgebra, PromiseSystem, Resolved};
+use crate::promise::{Binding, BodyAlgebra, PromiseSystem, Resolved};
 
 pub use monoid::{MaxOne, ResourceMonoid, Unbounded};
 pub use standard::{
@@ -89,6 +78,55 @@ impl<'a, A, P, D: BodyAlgebra> ResolutionView<'a, A, P, D> {
     /// Propagates the typed law violation `L::Error`.
     pub fn check<L: ScopeLaw<A, P, D>>(&self, law: &L) -> Result<(), L::Error> {
         law.check(self)
+    }
+
+    /// Ergonomic zero-annotation shorthand for [`ValencyLaw`].
+    ///
+    /// # Errors
+    /// Returns [`ValencyDeficit`] if aggregate demand on `offer_id` exceeds `capacity`.
+    pub fn check_valency<R, F>(
+        &self,
+        offer_id: P,
+        capacity: R,
+        weight: F,
+    ) -> Result<(), ValencyDeficit<P, R>>
+    where
+        P: Eq + Clone,
+        R: ResourceMonoid,
+        F: Fn(&Binding<A, P, D::Overlap>) -> R,
+    {
+        self.check(&ValencyLaw {
+            offer_id,
+            capacity,
+            weight,
+        })
+    }
+
+    /// Ergonomic zero-annotation shorthand for [`DisjointBy`].
+    ///
+    /// # Errors
+    /// Returns [`DisjointViolation`] if two bindings extract the same key.
+    pub fn check_disjoint<K, F>(&self, key: F) -> Result<(), DisjointViolation<K, P>>
+    where
+        P: Clone,
+        K: Ord + Clone,
+        F: Fn(&PromiseSystem<A, P, D>, &Binding<A, P, D::Overlap>) -> Option<K>,
+    {
+        self.check(&DisjointBy::new(key))
+    }
+
+    /// Ergonomic zero-annotation shorthand for [`AgreementBy`] (`C(b)`).
+    ///
+    /// # Errors
+    /// Returns [`AgreementConflict`] if two bindings in the same group disagree.
+    pub fn check_agreement<G, V, F>(&self, extract: F) -> Result<(), AgreementConflict<G, V, P>>
+    where
+        P: Clone,
+        G: Ord + Clone,
+        V: Eq + Clone,
+        F: Fn(&PromiseSystem<A, P, D>, &Binding<A, P, D::Overlap>) -> Option<(G, V)>,
+    {
+        self.check(&AgreementBy::new(extract))
     }
 }
 

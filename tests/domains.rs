@@ -5,10 +5,11 @@ use std::fs;
 use std::path::Path;
 
 use baugr::{
-    AgentSet, AgreementBy, Binding, BodyAlgebra, CoarseGrainError, Cond, DisjointBy, EvalError,
-    HierarchyError, LinkKind, MaxOne, NodeKind, Promise, PromiseSystem, QuorumLaw, ResolutionView,
-    ResourceMonoid, SstError, SstGraph, SstNode, SymmetricMeet, Unbounded, UniqueProviderLaw,
-    ValencyLaw, directory_of, project_sst,
+    AgentSet, AgreementConflict, Binding, BodyAlgebra, CoarseGrainError, Cond, ConditionWarning,
+    EvalError, HierarchyError, LinkKind, MaxOne, NodeKind, Promise, PromiseSystem,
+    ProviderCardinalityError, QuorumLaw, QuorumShortfall, ResolutionView, ResourceMonoid, SstError,
+    SstGraph, SstNode, SymmetricMeet, Unbounded, UniqueProviderLaw, ValencyLaw, directory_of,
+    project_sst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,31 +356,48 @@ fn domain_tenancy_and_generalized_laws() {
     assert!(r.quenched.contains("h1:power"));
 
     let view = ResolutionView::new(&sys, &r);
-    // Single DisjointBy checks per-host port uniqueness across ALL hosts simultaneously!
-    let per_host_ports = DisjointBy::new(
-        |sys: &PromiseSystem<&'static str, &'static str, CloudAlg>,
-         b: &Binding<&'static str, &'static str, (Option<u16>, Option<u8>)>| {
+    // Zero-annotation `check_disjoint` checks per-host port uniqueness across ALL hosts at once!
+    let check_ports = |v: &ResolutionView<'_, &'static str, &'static str, CloudAlg>| {
+        v.check_disjoint(|s, b| {
             let port = b.overlap.0?;
-            let host = sys.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
+            let host = s.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
             Some((host, port))
-        },
-    );
-    assert!(view.check(&per_host_ports).is_ok());
+        })
+    };
+    assert!(check_ports(&view).is_ok());
 
-    // Grouped AgreementBy C(b) checks global protocol version 2 across the fleet!
-    let fleet_proto = AgreementBy::new(
-        |_: &PromiseSystem<&'static str, &'static str, CloudAlg>,
-         b: &Binding<&'static str, &'static str, (Option<u16>, Option<u8>)>| {
-            b.overlap.1.map(|ver| ((), ver))
-        },
+    // Zero-annotation `check_agreement` verifies fleet-wide protocol version 2:
+    assert!(
+        view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
+            .is_ok()
     );
-    assert!(view.check(&fleet_proto).is_ok());
     assert!(
         view.check(&QuorumLaw {
             use_id: "t1:use_slot",
             min_providers: 1
         })
         .is_ok()
+    );
+    // Negative paths: QuorumShortfall & ProviderCardinalityError!
+    assert_eq!(
+        view.check(&QuorumLaw {
+            use_id: "t1:use_slot",
+            min_providers: 2
+        }),
+        Err(QuorumShortfall {
+            use_id: "t1:use_slot",
+            required: 2,
+            actual: 1,
+        })
+    );
+    assert_eq!(
+        view.check(&UniqueProviderLaw {
+            use_id: "nonexistent"
+        }),
+        Err(ProviderCardinalityError {
+            use_id: "nonexistent",
+            actual: 0,
+        })
     );
     assert!(
         view.check(&ValencyLaw {
@@ -403,10 +421,43 @@ fn domain_tenancy_and_generalized_laws() {
         },
     ));
     let r_collide = sys.resolve_optimistic().expect("stratified");
-    let err = ResolutionView::new(&sys, &r_collide)
-        .check(&per_host_ports)
+    let err = check_ports(&ResolutionView::new(&sys, &r_collide))
         .expect_err("expected per-host port collision");
     assert_eq!(err.key, ("host1", 80));
+
+    // Adding a protocol-v3 slot on host2 triggers AgreementConflict!
+    sys.add_promise(Promise::offer(
+        "h2:slot_443",
+        "host2",
+        AgentSet::single("tenant2"),
+        CloudSvc::Slot {
+            port: 443,
+            proto_ver: 3,
+        },
+    ));
+    sys.add_promise(Promise::accept(
+        "t2:use_443",
+        "tenant2",
+        AgentSet::single("host2"),
+        CloudSvc::Slot {
+            port: 443,
+            proto_ver: 3,
+        },
+    ));
+    let r_disagree = sys.resolve_optimistic().expect("stratified");
+    let conflict = ResolutionView::new(&sys, &r_disagree)
+        .check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
+        .expect_err("expected protocol version disagreement");
+    assert_eq!(
+        conflict,
+        AgreementConflict {
+            group: (),
+            first_value: 2,
+            first_binding: ("h1:slot_80", "t1:use_slot"),
+            conflicting_value: 3,
+            conflicting_binding: ("h2:slot_443", "t2:use_443"),
+        }
+    );
 }
 
 #[test]
@@ -469,6 +520,69 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
         bad.resolve_optimistic(),
         Err(EvalError::UnstratifiableNegativeCycle(_))
     ));
+}
+
+#[test]
+fn static_lint_overwrites_and_nested_negation() {
+    // Nested double negation `!!p` stays stratifiable in the same stratum & resolves cleanly!
+    let mut dbl = PromiseSystem::<&str, &str, _>::new(CloudAlg);
+    assert!(
+        dbl.add_promise(Promise::offer("a", "z", AgentSet::All, CloudSvc::Net))
+            .is_none()
+    );
+    // Overwriting an existing ID returns `Some(previous)` instead of silently dropping it.
+    assert!(
+        dbl.add_promise(Promise::offer("a", "z", AgentSet::All, CloudSvc::Net))
+            .is_some()
+    );
+    dbl.add_promise(
+        Promise::offer("b", "z", AgentSet::All, CloudSvc::Dns).when(!!Cond::self_promise("a")),
+    );
+    let r_dbl = dbl
+        .resolve_optimistic()
+        .expect("double negation is positive");
+    assert!(r_dbl.quenched.contains("b"));
+    assert_eq!(r_dbl.strata.get("a"), r_dbl.strata.get("b"));
+
+    // Static `lint()` flags dangling refs, wrong promiser, wrong polarity, non-interior, & incomplete info!
+    let mut lint_sys = PromiseSystem::<&str, &str, _>::new(CloudAlg);
+    lint_sys.add_promise(Promise::offer("x:off", "x", AgentSet::All, CloudSvc::Net));
+    lint_sys.add_promise(
+        Promise::offer("y:bad", "y", AgentSet::All, CloudSvc::Dns).when(Cond::all(vec![
+            Cond::self_promise("missing"),
+            Cond::assisted("x:off"),
+            Cond::interior("x:off"),
+        ])),
+    );
+    let diagnostics = lint_sys.lint();
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::DanglingRef {
+            referenced: "missing",
+            ..
+        }
+    )));
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::WrongPromiser {
+            referenced: "x:off",
+            ..
+        }
+    )));
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::WrongPolarity {
+            expected_offer: false,
+            ..
+        }
+    )));
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::NonInteriorRef {
+            referenced: "x:off",
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -537,6 +651,19 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
         g.reachable_along(&"sky", LinkKind::Near, false)
             .contains("blue")
     );
+
+    // Unknown node rejected cleanly; appointed_hubs & branching_points work on normalized axes!
+    assert_eq!(
+        g.add_edge("ghost", LinkKind::LeadsTo, "flight"),
+        Err(SstError::UnknownNode("ghost"))
+    );
+    g.add_node("takeoff", NodeKind::Event).unwrap();
+    g.add_node("hover", NodeKind::Event).unwrap();
+    g.add_edge("takeoff", LinkKind::LeadsTo, "flight").unwrap();
+    g.add_edge("flight", LinkKind::LeadsTo, "hover").unwrap();
+    g.add_edge("hover", LinkKind::LeadsTo, "landing").unwrap();
+    assert!(g.branching_points(LinkKind::LeadsTo).contains("flight"));
+    assert!(g.appointed_hubs(LinkKind::LeadsTo).contains("landing"));
 
     // Kind-homogeneous coarse graining collapses butterfly+wing -> insect (Thing).
     let q = g

@@ -48,32 +48,48 @@ theorem dep_gives_leadsTo {A P O U M : Type} [DecidableEq A] [DecidableEq P]
   simp only [List.mem_flatMap, List.mem_filterMap]
   exact ⟨pr, hmem, (dep, neg), hdep, by simp [hx]⟩
 
-/-- Every `+LeadsTo` edge in `projectSst sys` originates from a syntactic condition dependency. -/
+/-- Every normalized `+LeadsTo` edge in `projectSst sys` originates from a syntactic condition dependency. -/
 theorem leadsTo_gives_dep {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) {x y : SstNode A P}
-    (hedge : SstEdge.mk x .leadsTo y ∈ (projectSst sys).edges) :
+    (hedge : (projectSst sys).hasEdge x .leadsTo y) :
     ∃ (pr : Promise A P O U) (dep : P) (neg : Bool),
       pr ∈ sys.promises ∧ x = .promise dep ∧ y = .promise pr.id ∧
       (dep, neg) ∈ condDeps sys false pr.cond := by
-  simp only [projectSst, List.mem_append] at hedge
-  rcases hedge with ((hc | hp) | hexp) | hcas
-  · simp only [List.mem_filterMap] at hc
-    obtain ⟨a, _, hsome⟩ := hc
-    cases hpar : sys.hierarchy.parent a <;> simp [hpar] at hsome
-  · simp only [List.mem_map] at hp
-    obtain ⟨pr, _, h⟩ := hp; cases h
-  · simp only [List.mem_flatMap] at hexp
-    obtain ⟨pr, _, hmem⟩ := hexp
-    simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
-    rcases hmem with h | h <;> cases h
-  · simp only [List.mem_flatMap, List.mem_filterMap] at hcas
-    obtain ⟨pr, hmem, ⟨dep, neg⟩, hdep, hsome⟩ := hcas
-    cases hfd : sys.find? dep with
-    | none => simp [hfd] at hsome
-    | some _ =>
-      simp only [hfd, Option.some.injEq] at hsome
-      cases hsome
-      exact ⟨pr, dep, neg, hmem, rfl, rfl, hdep⟩
+  rcases hedge with hf | hb
+  · simp only [projectSst, List.mem_append] at hf
+    rcases hf with ((hc | hp) | hexp) | hcas
+    · simp only [List.mem_filterMap] at hc
+      obtain ⟨a, _, hsome⟩ := hc
+      cases hpar : sys.hierarchy.parent a <;> simp [hpar] at hsome
+    · simp only [List.mem_map] at hp
+      obtain ⟨pr, _, h⟩ := hp; cases h
+    · simp only [List.mem_flatMap] at hexp
+      obtain ⟨pr, _, hmem⟩ := hexp
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+      rcases hmem with h | h <;> cases h
+    · simp only [List.mem_flatMap, List.mem_filterMap] at hcas
+      obtain ⟨pr, hmem, ⟨dep, neg⟩, hdep, hsome⟩ := hcas
+      cases hfd : sys.find? dep with
+      | none => simp [hfd] at hsome
+      | some _ =>
+        simp only [hfd, Option.some.injEq] at hsome
+        cases hsome
+        exact ⟨pr, dep, neg, hmem, rfl, rfl, hdep⟩
+  · -- `projectSst` never emits negative `.follows` edges.
+    simp only [LinkKind.inv, projectSst, List.mem_append] at hb
+    rcases hb with ((hc | hp) | hexp) | hcas
+    · simp only [List.mem_filterMap] at hc
+      obtain ⟨a, _, hsome⟩ := hc
+      cases hpar : sys.hierarchy.parent a <;> simp [hpar] at hsome
+    · simp only [List.mem_map] at hp
+      obtain ⟨pr, _, h⟩ := hp; cases h
+    · simp only [List.mem_flatMap] at hexp
+      obtain ⟨pr, _, hmem⟩ := hexp
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+      rcases hmem with h | h <;> cases h
+    · simp only [List.mem_flatMap, List.mem_filterMap] at hcas
+      obtain ⟨pr, _, ⟨dep, neg⟩, _, hsome⟩ := hcas
+      cases hfd : sys.find? dep <;> simp [hfd] at hsome
 
 /-- T6 (CROWN-JEWEL UNIFICATION THEOREM):
     Perturbation Containment in the Semantic Spacetime Reverse Light Cone!
@@ -115,7 +131,7 @@ theorem perturbation_in_reverse_cone {A P O U M : Type} [DecidableEq A] [Decidab
             have hedge : SstEdge.mk (.promise d) .leadsTo (.promise p) ∈ (projectSst sys).edges := by
               rw [← hid]; exact dep_gives_leadsTo sys pr hmem d neg hdep hex
             have hd_reach : CausalReach (projectSst sys) (.promise d) (.promise target) :=
-              .step hedge hp
+              .step (Or.inl hedge) hp
             exact ⟨ih d hd_reach, hcone d hd_reach pr.promiser⟩
         · rfl
   intro s

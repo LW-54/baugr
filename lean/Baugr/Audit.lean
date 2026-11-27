@@ -6,6 +6,8 @@ import Baugr
 -- T5a–T5c: Strict γ(3,4) Semantic Spacetime & Coarse-Graining
 #print axioms Baugr.LinkKind.inv_inv
 #print axioms Baugr.allowed_antisym
+#print axioms Baugr.hasEdge_inv
+#print axioms Baugr.hasEdge_wellFormed
 #print axioms Baugr.allowed_pos_trans
 #print axioms Baugr.inference_contains_expresses
 #print axioms Baugr.inference_near_expresses
@@ -19,6 +21,7 @@ import Baugr
 #print axioms Baugr.quenchIter_chain
 #print axioms Baugr.cyclic_conditional_never_quenches
 #print axioms Baugr.stratified_agrees_with_positive
+#print axioms Baugr.checkValidStratification_sound
 #print axioms Baugr.stratumStep_mono
 #print axioms Baugr.stratumIter_fixed_point
 #print axioms Baugr.evalStratified_fixed_point

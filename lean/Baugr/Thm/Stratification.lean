@@ -9,6 +9,16 @@ import Baugr.Thm.LightCone
 
 namespace Baugr
 
+/-- T3b: Soundness of the executable stratification validator used in the DRT oracle. -/
+theorem checkValidStratification_sound {A P O U M : Type} [DecidableEq A] [DecidableEq P]
+    (sys : PromiseSystem A P O U M) (rank : P → Nat)
+    (h : checkValidStratification sys rank = true) :
+    ValidStratification sys rank := by
+  intro pr hmem dep neg hdep
+  simp only [checkValidStratification, List.all_eq_true] at h
+  have hpr := h pr hmem (dep, neg) hdep
+  cases neg <;> simp_all
+
 -- ----------------------------------------------------------------------------
 -- Stratum monotonicity, invariants, and exact finite convergence (≤ |P| + 1 steps)
 -- ----------------------------------------------------------------------------
@@ -358,7 +368,7 @@ private theorem evalStratified_le_of_cone {A P O U M : Type} [DecidableEq A] [De
                 have hedge : SstEdge.mk (.promise d) .leadsTo (.promise x) ∈ (projectSst sys).edges := by
                   rw [← hid_x]; exact dep_gives_leadsTo sys prx hmem_x d neg hdep hex
                 have hd_reach : CausalReach (projectSst sys) (.promise d) (.promise p) :=
-                  .step hedge hreach
+                  .step (Or.inl hedge) hreach
                 have hst := hv₁ prx hmem_x d neg hdep
                 rw [hid_x] at hst
                 have hd_le : rank₁ d ≤ s := by

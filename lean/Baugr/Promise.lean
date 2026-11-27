@@ -224,6 +224,13 @@ def ValidStratification {A P O U M : Type} [DecidableEq A] [DecidableEq P]
   ∀ pr ∈ sys.promises, ∀ dep neg, (dep, neg) ∈ condDeps sys false pr.cond →
     if neg then rank dep < rank pr.id else rank dep ≤ rank pr.id
 
+/-- Executable validator for `ValidStratification` (verified sound by `checkValidStratification_sound`). -/
+def checkValidStratification {A P O U M : Type} [DecidableEq A] [DecidableEq P]
+    (sys : PromiseSystem A P O U M) (rank : P → Nat) : Bool :=
+  sys.promises.all fun pr =>
+    (condDeps sys false pr.cond).all fun (dep, neg) =>
+      if neg then decide (rank dep < rank pr.id) else decide (rank dep ≤ rank pr.id)
+
 def stratumStep {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) (α : Assessment A P)
     (rank : P → Nat) (s : Nat) (base : P → Bool) (Q : P → Bool) (pid : P) : Bool :=

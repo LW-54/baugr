@@ -61,7 +61,7 @@ pub use law::{
 };
 pub use projection::{CoarseGrainingDirectory, SstNode, directory_of, project_sst};
 pub use promise::{
-    AgentSet, Binding, Body, BodyAlgebra, Cond, EvalError, HierarchyError, IncompleteInfoWarning,
-    Promise, PromiseMap, PromiseSystem, Resolved, SymmetricMeet,
+    AgentSet, Binding, Body, BodyAlgebra, Cond, ConditionWarning, EvalError, HierarchyError,
+    IncompleteInfoWarning, Promise, PromiseMap, PromiseSystem, Resolved, SymmetricMeet,
 };
 pub use spacetime::{CoarseGrainError, LinkKind, NodeKind, SstEdge, SstError, SstGraph};
