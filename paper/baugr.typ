@@ -37,6 +37,15 @@
   it
   v(0.22em, weak: true)
 }
+#show raw.where(block: true): it => block(
+  width: 100%,
+  fill: luma(248),
+  stroke: (left: 2pt + rgb("#1f4e79"), rest: 0.4pt + luma(220)),
+  inset: (x: 8pt, y: 6pt),
+  radius: 2pt,
+  breakable: false,
+  text(size: 7.7pt, it),
+)
 #show raw.where(block: false): text.with(size: 8.6pt)
 
 // Clean left-aligned cells inside all tables (prevents stretched spaces or overflows)
@@ -133,7 +142,7 @@ One might try to encode autonomy and local observers inside a general-purpose lo
 
 == Baugr's Thesis: Structural Autonomy in Causal Spacetime
 
-Baugr takes the opposite approach. Instead of building an unconstrained language and auditing away accidental coupling later, Baugr defines a small, closed algebra of *voluntary promises* coupled by a canonical functor $Phi$ to *strict Semantic Spacetime* $gamma(3,4)$ @burgess2025sst. Every construct in the algebra is drawn directly from seven primary papers of Bergstra and Burgess @bergstra2008static @bergstra2014impositions @burgess2014spacetimes1 @burgess2015spacetimes2 @burgess2016spacetimes3 @burgess2025sst @burgess2026quantitative. Because the condition grammar admits *only* observations grounded in an agent's own autonomy and superagent boundaries, *four universal laws* emerge automatically for *every* system expressible in Baugr—without per-model proof effort:
+Baugr takes the opposite approach. Instead of building an unconstrained language and auditing away accidental coupling later, Baugr defines a small, closed algebra of *voluntary promises* coupled by a canonical functor $Phi$ to *strict Semantic Spacetime* $gamma(3,4)$ @burgess2025sst—where $gamma(3,4)$ names Burgess's typed graph family with *3* ontological node kinds (_Events_, _Things_, _Concepts_) and *4* signed link axes (_Near_, _LeadsTo_, _Contains_, _Expresses_). Every construct in the algebra is drawn directly from seven primary papers of Bergstra and Burgess @bergstra2008static @bergstra2014impositions @burgess2014spacetimes1 @burgess2015spacetimes2 @burgess2016spacetimes3 @burgess2025sst @burgess2026quantitative. Because the condition grammar admits *only* observations grounded in an agent's own autonomy and superagent boundaries, *four universal laws* emerge automatically for *every* system expressible in Baugr—without per-model proof effort:
 
 #block(
   width: 100%,
@@ -278,9 +287,11 @@ Every promise carries one of exactly *two polarities* @bergstra2014impositions:
 
 Why not add a third polarity for commands or impositions? Bergstra and Burgess @bergstra2014impositions (§1.5) show that an imposition requires no separate primitive: an agent imposing a request simply emits an offer-like proposal, and *compliance* happens if and only if the recipient voluntarily issues an acceptance. By restricting the algebra to `+` and `-`, coercion becomes structurally inexpressible—a property we prove formally as *Law I (Autonomy)*.
 
-Rather than inventing a rigid predicate language to decide when an offer $+o$ satisfies a use $-u$, Baugr parameterizes the entire algebra over a domain-supplied *body algebra*: a partial mutual-information overlap operation @burgess2014spacetimes1 @burgess2026quantitative
+Rather than inventing a rigid predicate language to decide when an offer satisfies an acceptance, Baugr parameterizes the entire algebra over a domain-supplied *body algebra*: a partial mutual-information overlap operation @burgess2014spacetimes1 @burgess2026quantitative
 $ inter : O times U -> "Option"(M), $
-returning the shared commitment $m in M$ (for instance, `"230 V, 900 W"` in the microgrid, or an agreed TLS version in a network protocol) when $o$ and $u$ are compatible, and `"none"` when they are incompatible.
+returning the shared commitment $m in M$ when $o$ and $u$ are compatible, and `"none"` otherwise.
+
+*Why $+o$ and $-u$ instead of uniform $plus.minus b$?* Classical Promise Theory writes $+b_1$ and $-b_2$ with overlap $b_1 inter b_2$ over a single homogeneous space $B$ of promise bodies. In real engineering domains, however, offers and acceptances frequently have *asymmetric shapes*: in the microgrid, a power source offers a *capacity ceiling* (`230 V, max 5000 W` $in O$), whereas a load requests a *specific draw* (`230 V, need 900 W` $in U$), and their overlap is the *allocated power* (`900 W` $in M$); similarly, a TLS server offers a version *range* while a client states a *minimum requirement*. Separating $(O, U, M)$ accommodates both worlds cleanly: whenever a domain truly is symmetric (e.g., matching capability sets or meet-semilattices), setting $O = U = M = B$ recovers classical $plus.minus b$ and $b_1 inter b_2$ identically.
 
 A directed promise is a six-tuple $pi = ("id", a, T, sigma, b, C)$ where $a in A$ is the promiser, $T subset.eq A$ is the set of intended *targets* (promisees), $sigma subset.eq A$ is the *visibility scope* (who can observe the promise), $b in "Offer"(O) union "Use"(U)$ is the polarized body, and $C$ is an activation condition. Following @bergstra2008static @bergstra2014impositions, targets and observability scope are kept distinct: an agent may target one recipient while broadcasting visibility to an auditor, or hide a promise from third parties. Every promiser automatically observes its own promises:
 $ "inScope"(pi, x) quad <=> quad (x = a) or (x in sigma). $
@@ -681,6 +692,83 @@ Operationally, Baugr's stratified quenching fixed point is a disciplined instanc
 
 // ============================================================================
 // Section 8
+// ============================================================================
+
+= Practical Guide: Using Baugr in Real Systems
+
+How does an engineer turn an informal architecture into a formally checked Baugr model and extract actionable answers from it? In practice, every application of Baugr follows the same five-step workflow, regardless of domain.
+
+== The Five-Step Practitioner Workflow
+
++ *Define your domain compatibility as native code (`BodyAlgebra`).* Decide what an offer looks like ($O$), what an acceptance looks like ($U$), and what shared commitment ($M$) emerges when they match. Use symmetric types ($O = U = M$) when offers and uses share one vocabulary (`SymmetricMeet`), or asymmetric structs when offers describe capacities/ranges and uses describe demands/constraints.
++ *Declare agents, superagent walls, and voluntary promises.* Register containment edges (`contain(superagent, child)`), mark encapsulated subsystems opaque (`set_opaque(superagent, true)`), and attach each agent's offers (`+o`), acceptances (`-u`), and conditions (`SelfPromise`, `Assisted`, `Accepted`, `Interior`, `AtLeast`, `!`).
++ *Run static diagnostics before evaluating anything (`lint()`).* Catch modeling bugs—typos in promise IDs, referencing another agent's promise inside `SelfPromise`, checking `Assisted` on an offer instead of a use, pointing `Interior` outside a superagent's children, or leaving a target blind to an assisting dependency's scope—before simulation or deployment.
++ *Evaluate observer-local scenarios and query causal geometry.* Call `resolve_optimistic()` to verify the healthy steady state, then pass arbitrary observer-local assessment closures `resolve(|observer, promise| ...)` to test partial blackouts, network partitions, or Byzantine views. Project the system via `project_sst(&sys)` and query `forward_causal_cone()` ($J^+$) for exact *blast radius* ("what can break if this promise fails?") and `reverse_causal_cone()` ($J^-$) for exact *causal ancestry* ("what could possibly have caused this failure?").
++ *Enforce collective capacity and coordination laws.* Wrap the resolved state in `ResolutionView` and assert domain invariants—finite capacity budgets (`check_valency`), unique slots across a fleet (`check_disjoint`), peer consensus $C(b)$ (`check_agreement`), quorums (`QuorumLaw`), or custom `ScopeLaw` implementations.
+
+== Worked Translation: Microgrid Failover from Math to Executable Code
+
+Consider the four-promise Hospital Microgrid core from §2.1. In Burgess's compact arrow notation (with universal target $*$ and condition bar $|$), the system is:
+$ "grid" arrow.r^(+(230"V", <= 5000"W")) *, quad "bat" arrow.r^(-(230"V", 0"W")) "grid", quad "bat" arrow.r^(+(230"V", <= 1500"W") | not "Assisted"("sense")) *, quad "hosp" arrow.r^(-(230"V", 1000"W")) \{"grid", "bat"\}. $
+
+Its direct, line-for-line executable translation in Rust needs zero configuration files, zero macros, and zero runtime dependencies:
+
+```rust
+use baugr::{
+    AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView, SstNode,
+    project_sst,
+};
+
+struct PowerOffer { voltage: u16, max_watts: u32 }
+struct PowerUse   { voltage: u16, watts: u32 }
+struct GridAlgebra;
+impl BodyAlgebra for GridAlgebra {
+    type Offer = PowerOffer; type Use = PowerUse; type Overlap = u32;
+    fn overlap(&self, o: &PowerOffer, u: &PowerUse) -> Option<u32> {
+        (o.voltage == u.voltage && u.watts <= o.max_watts).then_some(u.watts)
+    }
+}
+
+let mut sys = PromiseSystem::new(GridAlgebra);
+sys.add_promise(Promise::offer(
+    "grid:mains", "grid", AgentSet::All,
+    PowerOffer { voltage: 230, max_watts: 5000 },
+));
+sys.add_promise(Promise::accept(
+    "bat:sense", "battery", AgentSet::single("grid"),
+    PowerUse { voltage: 230, watts: 0 },
+));
+sys.add_promise(
+    Promise::offer(
+        "bat:backup", "battery", AgentSet::All,
+        PowerOffer { voltage: 230, max_watts: 1500 },
+    )
+    .when(!Cond::assisted("bat:sense")),           // stratified failover
+);
+sys.add_promise(Promise::accept(
+    "hosp:draw", "hospital", AgentSet::of(["grid", "battery"]),
+    PowerUse { voltage: 230, watts: 1000 },
+));
+
+assert!(sys.lint().is_empty());                    // 1. static diagnostics
+let healthy = sys.resolve_optimistic()?;           // 2. mains up -> backup idle
+assert!(!healthy.quenched.contains("bat:backup"));
+let outage = sys.resolve(|obs, p| !(*obs == "battery" && *p == "grid:mains"))?;
+ResolutionView::new(&sys, &outage)                 // 3. local blackout + valency
+    .check_valency("bat:backup", 1500_u32, |b| b.overlap)?;
+let cone = project_sst(&sys)                       // 4. exact reverse cone J^-
+    .reverse_causal_cone(&SstNode::Promise("hosp:draw"));
+```
+
+== Three Practical Deployment Patterns
+
+Because Baugr imposes no runtime framework or domain schema, teams typically embed it in one of three roles:
++ *Pre-flight topology and architecture gate (CI / GitOps):* Deserialize infrastructure manifests, service meshes, or microservice contracts in a thin outer layer, compile them into a `PromiseSystem`, and fail builds automatically whenever an opaque subsystem boundary is pierced, a TCP port or resource budget collides, a conditional promise lacks complete information, or an unintended dependency enters a critical service's reverse light cone $J^-$.
++ *Interactive fault-impact and failover simulator:* Given a live fleet snapshot, sweep observer-local assessments $alpha$ (single-node failures, asymmetric network partitions, regional blackouts) to verify *before* an outage that every critical promise either fails over cleanly or stays isolated outside the blast radius $J^+$.
++ *Embedded coordination kernel:* Because the execution library requires no operating-system I/O and no standard library (`#![no_std]` + `alloc`), it embeds directly inside edge controllers, custom schedulers, or policy engines as a fast, deterministic, formally verified decision core.
+
+// ============================================================================
+// Section 9
 // ============================================================================
 
 = Verified Realization and Empirical Validation
