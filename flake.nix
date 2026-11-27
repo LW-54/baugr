@@ -36,7 +36,7 @@
       };
       commonArgs = {
         pname = "baugr";
-        version = "0.2.0";
+        version = "0.3.0";
         inherit src;
         strictDeps = true;
       };
@@ -63,7 +63,7 @@
         });
       fmt = craneLib.cargoFmt {
         pname = "baugr";
-        version = "0.2.0";
+        version = "0.3.0";
         inherit src;
       };
     };
@@ -71,7 +71,7 @@
     mkOracle = pkgs:
       pkgs.stdenv.mkDerivation {
         pname = "baugr-oracle";
-        version = "0.2.0";
+        version = "0.3.0";
         src = lib.fileset.toSource {
           root = ./lean;
           fileset = lib.fileset.unions [
@@ -105,7 +105,7 @@
     mkPaper = pkgs:
       pkgs.stdenvNoCC.mkDerivation {
         pname = "baugr-paper";
-        version = "0.2.0";
+        version = "0.3.0";
         src = lib.fileset.toSource {
           root = ./paper;
           fileset = lib.fileset.unions [

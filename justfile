@@ -10,11 +10,11 @@ test:
     RUSTDOCFLAGS="--deny warnings" cargo doc --no-deps
     cargo test
 
-# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 29 audited theorems
+# Build Lean 4 formal proofs + oracle and verify 0 sorryAx across all 33 audited theorems
 lean:
     cd lean && lake build Baugr baugr-oracle && lake env lean Baugr/Audit.lean
 
-# Run 500-case Rust ↔ Lean 4 Differential Randomized Testing (Cedar VGD)
+# Run 500-case value-derived Rust ↔ Lean 4 Differential Randomized Testing (Cedar VGD)
 drt: lean
     BAUGR_ORACLE=lean/.lake/build/bin/baugr-oracle cargo test --test drt
 

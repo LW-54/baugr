@@ -1,5 +1,5 @@
-//! Multi-tenant cloud host tenancy with simultaneous per-host port disjointness
-//! (`DisjointBy`) and fleet protocol agreement (`AgreementBy`).
+//! Multi-tenant cloud host tenancy with static upper-bound discharge (`static_upper_bound`),
+//! simultaneous per-host port disjointness (`DisjointBy`), and fleet protocol agreement (`AgreementBy`).
 //!
 //! Run with: `cargo run --example tenancy`
 
@@ -103,22 +103,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ));
 
-    let resolved = sys.resolve_optimistic()?;
-    let view = ResolutionView::new(&sys, &resolved);
-
-    // Verify per-host port disjointness across ALL hosts in one pass (zero type annotations!):
-    view.check_disjoint(|sys, b| {
+    // Static upper-bound discharge (Lean theorem `static_discharge_universal`):
+    // passing downward-closed laws on `B_max(S)` proves them for ALL runtime scenarios α!
+    let upper = sys.static_upper_bound();
+    let static_view = ResolutionView::new(&sys, &upper);
+    static_view.check_disjoint(|sys, b| {
         let port = b.overlap.0?;
         let host = sys.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
         Some((host, port))
     })?;
+    static_view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))?;
 
-    // Verify fleet-wide protocol version agreement C(b):
-    view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))?;
-
+    let resolved = sys.resolve_optimistic()?;
     println!(
-        "Tenancy verified: {} promises quenched, {} active bindings.",
-        resolved.quenched.len(),
+        "Tenancy statically discharged for all α: {} promises quenched, {} active bindings.",
+        resolved.quenched_count(),
         resolved.bindings.len()
     );
     Ok(())

@@ -1,5 +1,6 @@
-//! Reusable standard [`ScopeLaw`] instances: generalized valency, consumer quorum,
-//! unique provider, pairwise disjointness, and grouped coordination `C(b)`.
+//! Reusable standard [`ScopeLaw`] instances: single-offer valency, grouped
+//! cross-offer/scope monoidal budgets, consumer quorum, unique provider,
+//! pairwise disjointness, and grouped coordination `C(b)`.
 
 use alloc::collections::BTreeMap;
 use core::fmt;
@@ -11,7 +12,7 @@ use super::monoid::ResourceMonoid;
 use super::{ResolutionView, ScopeLaw};
 
 // ----------------------------------------------------------------------------
-// Standard Law 1: Generalized Promise Valency (`+b#C`)
+// Standard Law 1a: Single-Offer Promise Valency (`+b#C`)
 // ----------------------------------------------------------------------------
 
 /// Violation returned when aggregate bound demand exceeds an offer's valency capacity.
@@ -37,7 +38,7 @@ impl<P: fmt::Debug, R: fmt::Debug> fmt::Display for ValencyDeficit<P, R> {
 
 impl<P: fmt::Debug, R: fmt::Debug> core::error::Error for ValencyDeficit<P, R> {}
 
-/// Generalized Promise Valency Law (`+b#C`, `arXiv:1505.01716v1` §2.7).
+/// Single-offer Promise Valency Law (`+b#C`, `arXiv:1505.01716v1` §2.7).
 #[derive(Clone, Debug)]
 pub struct ValencyLaw<P, R, F> {
     /// Offer promise identifier whose capacity is bounded.
@@ -48,7 +49,7 @@ pub struct ValencyLaw<P, R, F> {
     pub weight: F,
 }
 
-impl<A, P, D, R, F> ScopeLaw<A, P, D> for ValencyLaw<P, R, F>
+impl<A, P, D, Rule, R, F> ScopeLaw<A, P, D, Rule> for ValencyLaw<P, R, F>
 where
     P: Eq + Clone,
     D: BodyAlgebra,
@@ -57,7 +58,7 @@ where
 {
     type Error = ValencyDeficit<P, R>;
 
-    fn check(&self, view: &ResolutionView<'_, A, P, D>) -> Result<(), Self::Error> {
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
         let mut used = R::zero();
         for b in &view.resolved.bindings {
             if b.offer_id == self.offer_id {
@@ -73,6 +74,114 @@ where
                 capacity: self.capacity.clone(),
             })
         }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Standard Law 1b: Generalized Grouped Monoidal Budget (`BudgetBy`)
+// ----------------------------------------------------------------------------
+
+/// Violation returned when aggregate bound demand across a resource group
+/// (e.g., an agent's shared RAM pool, a battery bank's total grants, or a host's CPU)
+/// exceeds that group's capacity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BudgetDeficit<G, R> {
+    /// Over-committed resource group identifier.
+    pub group: G,
+    /// Aggregate demand across all bindings mapped to `group`.
+    pub used: R,
+    /// Declared capacity of `group`.
+    pub capacity: R,
+}
+
+impl<G: fmt::Debug, R: fmt::Debug> fmt::Display for BudgetDeficit<G, R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "budget deficit on group {:?}: used {:?} exceeds capacity {:?}",
+            self.group, self.used, self.capacity
+        )
+    }
+}
+
+impl<G: fmt::Debug, R: fmt::Debug> core::error::Error for BudgetDeficit<G, R> {}
+
+/// Generalized grouped monoidal budget law: maps each binding to `Option<(group, demand)>`,
+/// sums demands per group in any [`ResourceMonoid`] `R`, and checks each group against
+/// `capacity(&group)` in a single pass.
+///
+/// Unifies single-offer valency (`group = b.offer_id`), cross-offer per-agent shared pools
+/// (`group = b.promiser`), and per-host / per-superagent multi-dimensional budgets.
+pub struct BudgetBy<G, R, F, C> {
+    /// Extractor returning `Some((group, demand))` for bindings charged to a budget.
+    pub extract: F,
+    /// Capacity oracle returning the maximum allowed total in `R` for `group`.
+    pub capacity: C,
+    _marker: PhantomData<fn() -> (G, R)>,
+}
+
+impl<G, R, F, C> BudgetBy<G, R, F, C> {
+    /// Constructs a new [`BudgetBy`] law.
+    #[must_use]
+    pub const fn new(extract: F, capacity: C) -> Self {
+        Self {
+            extract,
+            capacity,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<G, R, F: Clone, C: Clone> Clone for BudgetBy<G, R, F, C> {
+    fn clone(&self) -> Self {
+        Self {
+            extract: self.extract.clone(),
+            capacity: self.capacity.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<G, R, F: fmt::Debug, C: fmt::Debug> fmt::Debug for BudgetBy<G, R, F, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BudgetBy")
+            .field("extract", &self.extract)
+            .field("capacity", &self.capacity)
+            .finish()
+    }
+}
+
+impl<A, P, D, Rule, G, R, F, C> ScopeLaw<A, P, D, Rule> for BudgetBy<G, R, F, C>
+where
+    D: BodyAlgebra,
+    G: Ord + Clone,
+    R: ResourceMonoid,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<(G, R)>,
+    C: Fn(&G) -> R,
+{
+    type Error = BudgetDeficit<G, R>;
+
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
+        let mut totals: BTreeMap<G, R> = BTreeMap::new();
+        for b in &view.resolved.bindings {
+            if let Some((group, demand)) = (self.extract)(view.system, b) {
+                let next = totals
+                    .get(&group)
+                    .map_or_else(|| demand.clone(), |prev| prev.add(&demand));
+                totals.insert(group, next);
+            }
+        }
+        for (group, used) in totals {
+            let cap = (self.capacity)(&group);
+            if !used.le(&cap) {
+                return Err(BudgetDeficit {
+                    group,
+                    used,
+                    capacity: cap,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -112,10 +221,10 @@ pub struct QuorumLaw<P> {
     pub min_providers: usize,
 }
 
-impl<A, P: Eq + Clone, D: BodyAlgebra> ScopeLaw<A, P, D> for QuorumLaw<P> {
+impl<A, P: Eq + Clone, D: BodyAlgebra, Rule> ScopeLaw<A, P, D, Rule> for QuorumLaw<P> {
     type Error = QuorumShortfall<P>;
 
-    fn check(&self, view: &ResolutionView<'_, A, P, D>) -> Result<(), Self::Error> {
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
         let actual = view
             .resolved
             .bindings
@@ -166,10 +275,10 @@ pub struct UniqueProviderLaw<P> {
     pub use_id: P,
 }
 
-impl<A, P: Eq + Clone, D: BodyAlgebra> ScopeLaw<A, P, D> for UniqueProviderLaw<P> {
+impl<A, P: Eq + Clone, D: BodyAlgebra, Rule> ScopeLaw<A, P, D, Rule> for UniqueProviderLaw<P> {
     type Error = ProviderCardinalityError<P>;
 
-    fn check(&self, view: &ResolutionView<'_, A, P, D>) -> Result<(), Self::Error> {
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
         let actual = view
             .resolved
             .bindings
@@ -252,16 +361,16 @@ impl<K, F: fmt::Debug> fmt::Debug for DisjointBy<K, F> {
     }
 }
 
-impl<A, P, D, K, F> ScopeLaw<A, P, D> for DisjointBy<K, F>
+impl<A, P, D, Rule, K, F> ScopeLaw<A, P, D, Rule> for DisjointBy<K, F>
 where
     P: Clone,
     D: BodyAlgebra,
     K: Ord + Clone,
-    F: Fn(&PromiseSystem<A, P, D>, &Binding<A, P, D::Overlap>) -> Option<K>,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<K>,
 {
     type Error = DisjointViolation<K, P>;
 
-    fn check(&self, view: &ResolutionView<'_, A, P, D>) -> Result<(), Self::Error> {
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
         let mut seen: BTreeMap<K, (P, P)> = BTreeMap::new();
         for b in &view.resolved.bindings {
             if let Some(k) = (self.key)(view.system, b) {
@@ -356,17 +465,17 @@ impl<G, V, F: fmt::Debug> fmt::Debug for AgreementBy<G, V, F> {
     }
 }
 
-impl<A, P, D, G, V, F> ScopeLaw<A, P, D> for AgreementBy<G, V, F>
+impl<A, P, D, Rule, G, V, F> ScopeLaw<A, P, D, Rule> for AgreementBy<G, V, F>
 where
     P: Clone,
     D: BodyAlgebra,
     G: Ord + Clone,
     V: Eq + Clone,
-    F: Fn(&PromiseSystem<A, P, D>, &Binding<A, P, D::Overlap>) -> Option<(G, V)>,
+    F: Fn(&PromiseSystem<A, P, D, Rule>, &Binding<A, P, D::Overlap>) -> Option<(G, V)>,
 {
     type Error = AgreementConflict<G, V, P>;
 
-    fn check(&self, view: &ResolutionView<'_, A, P, D>) -> Result<(), Self::Error> {
+    fn check(&self, view: &ResolutionView<'_, A, P, D, Rule>) -> Result<(), Self::Error> {
         let mut expected: BTreeMap<G, (V, (P, P))> = BTreeMap::new();
         for b in &view.resolved.bindings {
             if let Some((group, value)) = (self.extract)(view.system, b) {

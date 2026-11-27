@@ -21,18 +21,18 @@
 //!
 //! // Mains healthy -> backup stays inactive.
 //! let normal = sys.resolve_optimistic().unwrap();
-//! assert!(!normal.quenched.contains("bat:backup"));
+//! assert!(!normal.is_quenched("bat:backup"));
 //!
 //! // Mains broken -> backup quenches via stratified negation.
 //! let outage = sys.resolve(|_, p| *p != "grid:mains").unwrap();
-//! assert!(outage.quenched.contains("bat:backup"));
+//! assert!(outage.is_quenched("bat:backup"));
 //! ```
 //!
 //! ## Modules
 //! - [`promise`]: Autonomous agents, 2-polarity offers/acceptances (`+b`/`-b`),
-//!   mutual-information overlap (`b₁ ∩ b₂`), exact conditional quenching
-//!   (`+b | C`) with stratified negation, observer-local assessments
-//!   `α(a, π)`, and acyclic opaque/transparent dressed superagents.
+//!   mutual-information overlap (`b₁ ∩ b₂`), boolean and value-dependent conditional
+//!   quenching (`+f(obs) | C`) with stratified negation and observation barriers,
+//!   observer-local assessments `α(a, π)`, and acyclic opaque/transparent superagents.
 //! - [`spacetime`]: Strict typed Semantic Spacetime γ(3,4) with 3 node
 //!   meta-types (`Event`, `Thing`, `Concept`), 4 signed link meta-types
 //!   (`Near`, `±LeadsTo`, `±Contains`, `±Expresses`), dual-link normalized
@@ -40,9 +40,11 @@
 //!   coarse-graining `G`.
 //! - [`projection`]: Canonical well-formed functor `Φ : PromiseSystem -> γ(3,4)`
 //!   and superagent coarse-graining directories.
-//! - [`law`]: Generalized ordered-commutative-monoid Promise Valency (`+b#n`)
-//!   and open composable [`law::ScopeLaw`] verification (`ValencyLaw`,
-//!   `QuorumLaw`, `UniqueProviderLaw`, `DisjointBy`, `AgreementBy`).
+//! - [`law`]: Generalized ordered-commutative-monoid Promise Valency (`+b#n`),
+//!   grouped cross-offer budgets (`BudgetBy`), universal static upper-bound
+//!   discharge (`static_upper_bound`), and open composable [`law::ScopeLaw`]
+//!   verification (`ValencyLaw`, `BudgetBy`, `QuorumLaw`, `UniqueProviderLaw`,
+//!   `DisjointBy`, `AgreementBy`).
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -55,13 +57,14 @@ pub mod promise;
 pub mod spacetime;
 
 pub use law::{
-    AgreementBy, AgreementConflict, DisjointBy, DisjointViolation, MaxOne,
+    AgreementBy, AgreementConflict, BudgetBy, BudgetDeficit, DisjointBy, DisjointViolation, MaxOne,
     ProviderCardinalityError, QuorumLaw, QuorumShortfall, ResolutionView, ResourceMonoid, ScopeLaw,
     Unbounded, UniqueProviderLaw, ValencyDeficit, ValencyLaw,
 };
 pub use projection::{CoarseGrainingDirectory, SstNode, directory_of, project_sst};
 pub use promise::{
-    AgentSet, Binding, Body, BodyAlgebra, Cond, ConditionWarning, EvalError, HierarchyError,
-    IncompleteInfoWarning, Promise, PromiseMap, PromiseSystem, Resolved, SymmetricMeet,
+    AgentSet, AlgebraBody, AlgebraPromise, Binding, Body, BodyAlgebra, BodySpec, Cond,
+    ConditionWarning, DeriveAlgebra, EvalError, HierarchyError, IncompleteInfoWarning, LocalView,
+    Obs, ObservedOffer, ObservedUse, Promise, PromiseMap, PromiseSystem, Resolved, SymmetricMeet,
 };
 pub use spacetime::{CoarseGrainError, LinkKind, NodeKind, SstEdge, SstError, SstGraph};

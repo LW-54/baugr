@@ -50,11 +50,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let degraded = sys.resolve(|_, p| *p != "n2" && *p != "n3")?;
     println!(
         "2/3 replicas up -> app ready: {}",
-        healthy.quenched.contains("client:app")
+        healthy.is_quenched("client:app")
     );
     println!(
         "1/3 replicas up -> app ready: {}",
-        degraded.quenched.contains("client:app")
+        degraded.is_quenched("client:app")
     );
 
     let dir = directory_of(&sys, &"raft");

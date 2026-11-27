@@ -1,11 +1,15 @@
 //! Cedar VGD Differential Randomized Testing (Rust `baugr` ↔ Lean 4 `baugr-oracle`)
-//! plus standalone randomized property verification of all formal theorems (T1–T7).
+//! plus standalone randomized property verification of all formal theorems (T1–T8).
 //!
-//! - Always runs 500 randomized property checks (perturbation light-cone containment,
-//!   autonomy non-coercion, opaque superagent non-piercing, strict γ(3,4) well-formedness).
+//! - Always runs 500 randomized property checks covering BOTH static promises AND
+//!   value-derived conditional promises (`+f(obs) | C` / `-f(obs) | C` with all 4
+//!   `Obs` kinds, nested `Not`, opaque superagents, and observer-local broken `α`):
+//!   reverse light-cone containment over *resolved body values*, opaque non-piercing,
+//!   and strict γ(3,4) well-formedness.
 //! - When `BAUGR_ORACLE` points to the compiled Lean 4 `baugr-oracle` executable (wired
 //!   automatically by `nix flake check` and `just drt`), also verifies bit-for-bit
-//!   equivalence between Rust and Lean across all 500+ randomized Promise Systems!
+//!   equivalence of resolved bodies, bindings + overlaps, and SST edges across all
+//!   500 randomized Promise Systems (including Lean-checked Kosaraju stratification!).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -13,8 +17,8 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use baugr::{
-    AgentSet, Body, BodyAlgebra, Cond, LinkKind, NodeKind, Promise, PromiseSystem, SstNode,
-    project_sst,
+    AgentSet, Body, BodyAlgebra, BodySpec, Cond, DeriveAlgebra, LinkKind, LocalView, NodeKind, Obs,
+    Promise, PromiseSystem, Resolved, SstNode, project_sst,
 };
 
 /// Deterministic xorshift64* PRNG (zero external crate dependencies).
@@ -48,9 +52,15 @@ impl Rng {
     }
 }
 
-/// Exact bitmask mutual-information `BodyAlgebra` matching `Baugr.Oracle.Main.bitmaskAlgebra`.
+/// Exact bitmask mutual-information `BodyAlgebra` + `DeriveAlgebra` matching
+/// `Baugr.Oracle.Main.bitmaskAlgebra` and `Baugr.Oracle.Main.deriveBitmask`.
 #[derive(Clone, Copy, Debug)]
 struct BitmaskAlgebra;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BitmaskRule {
+    seed: usize,
+}
 
 impl BodyAlgebra for BitmaskAlgebra {
     type Offer = usize;
@@ -63,9 +73,51 @@ impl BodyAlgebra for BitmaskAlgebra {
     }
 }
 
+fn eval_bitmask_rule(
+    seed: usize,
+    obs: &LocalView<'_, usize, usize, BitmaskAlgebra>,
+) -> Option<usize> {
+    let body_val = |b: &Body<usize, usize>| match *b {
+        Body::Offer(v) | Body::Use(v) => v,
+    };
+    let mut acc = seed;
+    for (_, b) in obs.self_entries() {
+        acc |= body_val(b);
+    }
+    for e in obs.assisted_entries() {
+        acc = (acc ^ *e.offer) | e.overlap;
+    }
+    for e in obs.accepted_entries() {
+        acc = (acc ^ *e.use_body) | e.overlap;
+    }
+    for (_, _, b) in obs.interior_entries() {
+        acc |= body_val(b);
+    }
+    let out = acc & 7;
+    (out != 0).then_some(out)
+}
+
+impl DeriveAlgebra<usize, usize, BitmaskRule> for BitmaskAlgebra {
+    fn derive_offer(
+        &self,
+        rule: &BitmaskRule,
+        obs: &LocalView<'_, usize, usize, Self>,
+    ) -> Option<usize> {
+        eval_bitmask_rule(rule.seed, obs)
+    }
+
+    fn derive_use(
+        &self,
+        rule: &BitmaskRule,
+        obs: &LocalView<'_, usize, usize, Self>,
+    ) -> Option<usize> {
+        eval_bitmask_rule(rule.seed, obs)
+    }
+}
+
 struct GeneratedCase {
     num_agents: usize,
-    sys: PromiseSystem<usize, usize, BitmaskAlgebra>,
+    sys: PromiseSystem<usize, usize, BitmaskAlgebra, BitmaskRule>,
     broken: BTreeSet<(usize, usize)>,
 }
 
@@ -87,7 +139,7 @@ fn gen_cond(
     rng: &mut Rng,
     promiser: usize,
     num_promises: usize,
-    sys: &PromiseSystem<usize, usize, BitmaskAlgebra>,
+    sys: &PromiseSystem<usize, usize, BitmaskAlgebra, BitmaskRule>,
     depth: usize,
     allow_neg: bool,
 ) -> Cond<usize> {
@@ -106,7 +158,6 @@ fn gen_cond(
             1_usize.saturating_add(rng.range(2)),
         ),
         3 => {
-            // Prefer an interior promise if one exists, otherwise random id.
             let interior_pids: Vec<usize> = sys
                 .promises()
                 .values()
@@ -146,10 +197,46 @@ fn gen_cond(
     }
 }
 
+fn gen_obs_list(
+    rng: &mut Rng,
+    promiser: usize,
+    max_dep_id: usize,
+    sys: &PromiseSystem<usize, usize, BitmaskAlgebra, BitmaskRule>,
+) -> Vec<Obs<usize>> {
+    if max_dep_id == 0 {
+        return Vec::new();
+    }
+    let count = 1_usize.saturating_add(rng.range(3)); // 1..=3 observations
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        match rng.range(4) {
+            0 => out.push(Obs::self_promise(rng.range(max_dep_id))),
+            1 => out.push(Obs::assisted(rng.range(max_dep_id))),
+            2 => out.push(Obs::accepted(rng.range(max_dep_id))),
+            _ => {
+                let interior_pids: Vec<usize> = sys
+                    .promises()
+                    .values()
+                    .filter(|pr| {
+                        pr.id < max_dep_id && sys.is_strict_ancestor(&promiser, &pr.promiser)
+                    })
+                    .map(|pr| pr.id)
+                    .collect();
+                let q = interior_pids
+                    .get(rng.range(interior_pids.len()))
+                    .copied()
+                    .unwrap_or_else(|| rng.range(max_dep_id));
+                out.push(Obs::interior(q));
+            }
+        }
+    }
+    out
+}
+
 fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
     loop {
         let num_agents = 3_usize.saturating_add(rng.range(5)); // 3..=7 agents
-        let mut sys = PromiseSystem::new(BitmaskAlgebra);
+        let mut sys = PromiseSystem::with_rules(BitmaskAlgebra);
         for a in 0..num_agents {
             let opaque = rng.coin(1, 3);
             sys.add_superagent(a, opaque);
@@ -162,24 +249,35 @@ fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
             }
         }
         let num_promises = 4_usize.saturating_add(rng.range(8)); // 4..=11 promises
-        // Pass 1: create promises with unconditional bodies so static dependencies exist.
+        // Pass 1: create mix of static fixed promises and value-derived promises (`+f(obs)` / `-f(obs)`).
         for pid in 0..num_promises {
             let promiser = rng.range(num_agents);
             let target = gen_agent_set(rng, num_agents);
             let scope = gen_agent_set(rng, num_agents);
-            let body_bits = 1_usize.saturating_add(rng.range(7)); // 3-bit non-zero bitmask
-            let pr = if rng.coin(1, 2) {
-                Promise::offer(pid, promiser, target, body_bits).with_scope(scope)
+            let is_offer = rng.coin(1, 2);
+            let is_derived = pid > 0 && rng.coin(1, 3);
+            let pr = if is_derived {
+                let obs = gen_obs_list(rng, promiser, pid, &sys);
+                let rule = BitmaskRule { seed: rng.range(8) };
+                if is_offer {
+                    Promise::derive_offer(pid, promiser, target, obs, rule).with_scope(scope)
+                } else {
+                    Promise::derive_use(pid, promiser, target, obs, rule).with_scope(scope)
+                }
             } else {
-                Promise::accept(pid, promiser, target, body_bits).with_scope(scope)
+                let body_bits = 1_usize.saturating_add(rng.range(7)); // 3-bit non-zero bitmask
+                if is_offer {
+                    Promise::offer(pid, promiser, target, body_bits).with_scope(scope)
+                } else {
+                    Promise::accept(pid, promiser, target, body_bits).with_scope(scope)
+                }
             };
             sys.add_promise(pr);
         }
-        // Pass 2: attach rich conditions (including positive cycles & stratified negations!).
+        // Pass 2: attach rich conditions (including positive cycles & nested negations!).
         let mut updated = Vec::with_capacity(num_promises);
         for pid in 0..num_promises {
             if let Some(mut pr) = sys.promises().get(&pid).cloned() {
-                // Only allow `Not` referencing strictly lower IDs sometimes, or arbitrary to exercise stratify().
                 let allow_neg = rng.coin(1, 3);
                 pr.cond = gen_cond(rng, pr.promiser, num_promises, &sys, 2, allow_neg);
                 updated.push(pr);
@@ -190,7 +288,6 @@ fn generate_stratifiable_case(rng: &mut Rng) -> GeneratedCase {
         }
 
         if sys.stratify().is_err() {
-            // Unstratifiable negative cycle generated — retry for stratifiable oracle case.
             continue;
         }
 
@@ -249,6 +346,18 @@ fn fmt_cond(c: &Cond<usize>) -> String {
     }
 }
 
+fn fmt_obs(obs: &[Obs<usize>]) -> String {
+    obs.iter()
+        .map(|o| match o {
+            Obs::SelfPromise(q) => format!("S {q}"),
+            Obs::Assisted(u) => format!("A {u}"),
+            Obs::Accepted(oid) => format!("C {oid}"),
+            Obs::Interior(q) => format!("I {q}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn serialize_case(case: &GeneratedCase, strata: &BTreeMap<usize, usize>) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "AGENTS {}", case.num_agents);
@@ -259,21 +368,42 @@ fn serialize_case(case: &GeneratedCase, strata: &BTreeMap<usize, usize>) -> Stri
         let _ = writeln!(out, "OPAQUE {op}");
     }
     for pr in case.sys.promises().values() {
-        let (pol, body_val) = match pr.body {
-            Body::Offer(v) => ("O", v),
-            Body::Use(v) => ("U", v),
-        };
-        let _ = writeln!(
-            out,
-            "PROMISE {} {} {} {} {} {} {}",
-            pr.id,
-            pr.promiser,
-            pol,
-            fmt_agent_set(&pr.target),
-            fmt_agent_set(&pr.scope),
-            body_val,
-            fmt_cond(&pr.cond)
-        );
+        match &pr.spec {
+            BodySpec::Fixed(body) => {
+                let (pol, body_val) = match *body {
+                    Body::Offer(v) => ("O", v),
+                    Body::Use(v) => ("U", v),
+                };
+                let _ = writeln!(
+                    out,
+                    "PROMISE {} {} {} {} {} {} {}",
+                    pr.id,
+                    pr.promiser,
+                    pol,
+                    fmt_agent_set(&pr.target),
+                    fmt_agent_set(&pr.scope),
+                    body_val,
+                    fmt_cond(&pr.cond)
+                );
+            }
+            BodySpec::DerivedOffer { obs, rule } | BodySpec::DerivedUse { obs, rule } => {
+                let pol = if pr.is_offer() { "O" } else { "U" };
+                let obs_str = fmt_obs(obs);
+                let _ = writeln!(
+                    out,
+                    "DERIVED {} {} {} {} {} {} {} {} {}",
+                    pr.id,
+                    pr.promiser,
+                    pol,
+                    fmt_agent_set(&pr.target),
+                    fmt_agent_set(&pr.scope),
+                    rule.seed,
+                    obs.len(),
+                    obs_str,
+                    fmt_cond(&pr.cond)
+                );
+            }
+        }
     }
     for (obs, pid) in &case.broken {
         let _ = writeln!(out, "BROKEN {obs} {pid}");
@@ -283,7 +413,6 @@ fn serialize_case(case: &GeneratedCase, strata: &BTreeMap<usize, usize>) -> Stri
         let _ = writeln!(out, "STRATUM {pid} {r}");
     }
     let _ = writeln!(out, "MAX_STRATUM {max_s}");
-    // Knaster-Tarski convergence guaranteed in <= |promises| + 1 steps per stratum.
     let _ = writeln!(out, "STEPS {}", case.sys.promises().len().saturating_add(2));
     out.push_str("END_CASE\n");
     out
@@ -310,14 +439,14 @@ const fn fmt_sst_link(k: LinkKind) -> &'static str {
 }
 
 struct CheckedCase {
-    resolved: baugr::Resolved<usize, usize, usize>,
+    resolved: Resolved<usize, usize, BitmaskAlgebra>,
     sst: baugr::SstGraph<SstNode<usize, usize>>,
 }
 
 fn check_theorem_invariants(
     rng: &mut Rng,
     case: &GeneratedCase,
-    resolved: &baugr::Resolved<usize, usize, usize>,
+    resolved: &Resolved<usize, usize, BitmaskAlgebra>,
     sst: &baugr::SstGraph<SstNode<usize, usize>>,
 ) -> Result<(), String> {
     // Property 1 (T5d): Canonical Φ : PromiseSystem -> γ(3,4) is strictly well-formed.
@@ -349,7 +478,8 @@ fn check_theorem_invariants(
         }
     }
 
-    // Property 3 (T6 Crown Jewel): Flipping assessments OUTSIDE J⁻(target) never changes target!
+    // Property 3 (T6 Crown Jewel over full value-carrying bodies!):
+    // Flipping assessments OUTSIDE J⁻(target) never changes target's resolved `Option<Body>`!
     let target_pid = rng.range(case.sys.promises().len());
     let rev_cone = sst.reverse_causal_cone(&SstNode::Promise(target_pid));
     let mut flipped_broken = case.broken.clone();
@@ -364,10 +494,10 @@ fn check_theorem_invariants(
         .sys
         .resolve(|obs, pid| !flipped_broken.contains(&(*obs, *pid)))
         .map_err(|e| format!("perturbed resolve failed: {e}"))?;
-    if resolved.quenched.contains(&target_pid) != resolved_perturbed.quenched.contains(&target_pid)
-    {
+    if resolved.bodies.get(&target_pid) != resolved_perturbed.bodies.get(&target_pid) {
         return Err(
-            "T6 violation: perturbation outside reverse light cone altered target!".to_string(),
+            "T6 violation: perturbation outside reverse light cone altered target body!"
+                .to_string(),
         );
     }
     Ok(())
@@ -407,7 +537,7 @@ fn verify_against_lean_oracle(
     let mut lines = stdout.lines();
 
     for (idx, checked) in cases.iter().enumerate() {
-        let q_line = lines.next().ok_or("missing QUENCHED line")?;
+        let q_line = lines.next().ok_or("missing BODIES line")?;
         let b_line = lines.next().ok_or("missing BINDINGS line")?;
         let s_line = lines.next().ok_or("missing SST line")?;
         let end_line = lines.next().ok_or("missing END_OUT line")?;
@@ -415,19 +545,24 @@ fn verify_against_lean_oracle(
             return Err(format!("case {idx}: expected END_OUT, got {end_line:?}"));
         }
 
+        let mut rust_bodies: BTreeSet<String> = BTreeSet::new();
+        for (pid, body) in &checked.resolved.bodies {
+            match *body {
+                Body::Offer(v) => {
+                    rust_bodies.insert(format!("{pid}:O:{v}"));
+                }
+                Body::Use(v) => {
+                    rust_bodies.insert(format!("{pid}:U:{v}"));
+                }
+            }
+        }
         let expected_q = format!(
-            "QUENCHED {}",
-            checked
-                .resolved
-                .quenched
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" ")
+            "BODIES {}",
+            rust_bodies.into_iter().collect::<Vec<_>>().join(" ")
         );
         if q_line.trim() != expected_q.trim() {
             return Err(format!(
-                "DRT case {idx} QUENCHED mismatch: lean={q_line:?} rust={expected_q:?}"
+                "DRT case {idx} BODIES mismatch: lean={q_line:?} rust={expected_q:?}"
             ));
         }
 
@@ -469,7 +604,7 @@ fn verify_against_lean_oracle(
 
 #[test]
 fn randomized_theorem_properties_and_optional_lean_drt() {
-    let mut rng = Rng::new(0xBA09_0002_CAFE_BABE);
+    let mut rng = Rng::new(0xBA09_0003_CAFE_BABE);
     let num_cases = 500;
     let mut cases = Vec::with_capacity(num_cases);
     let mut oracle_input = String::new();

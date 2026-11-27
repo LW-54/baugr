@@ -60,14 +60,15 @@ pub struct CoarseGrainingDirectory<A, P> {
 
 /// Canonical functor `Φ : PromiseSystem -> γ(3,4)`.
 ///
-/// Emits strictly well-formed γ(3,4) edges:
+/// Emits strictly well-formed γ(3,4) edges covering both boolean quenching (`Cond`)
+/// and value-derivation (`Obs`) causality:
 /// - `Agent(superagent) --(+Contains)--> Agent(child)` (`t +C t`)
 /// - `Promise(p) --(+Contains)--> Agent(promiser)` (`e +C t`)
 /// - `Agent(promiser) --(+Expresses)--> Intent(p)` (`t +E c`)
 /// - `Promise(p) --(+Expresses)--> Intent(p)` (`e +E c`)
 /// - `Promise(dep) --(+LeadsTo)--> Promise(p)` (`e +L e`)
 #[must_use]
-pub fn project_sst<A, P, D>(sys: &PromiseSystem<A, P, D>) -> SstGraph<SstNode<A, P>>
+pub fn project_sst<A, P, D, R>(sys: &PromiseSystem<A, P, D, R>) -> SstGraph<SstNode<A, P>>
 where
     A: Ord + Clone,
     P: Ord + Clone,
@@ -110,7 +111,7 @@ where
         );
 
         let mut deps = Vec::new();
-        compat.cond_deps(false, &pr.cond, &mut deps);
+        compat.promise_deps(&pr.cond, pr.obs(), &mut deps);
         for (dep, _) in deps {
             if sys.promises().contains_key(&dep) {
                 let _ = graph.add_edge(
@@ -127,8 +128,8 @@ where
 
 /// Extracts the [`CoarseGrainingDirectory`] of `superagent`.
 #[must_use]
-pub fn directory_of<A, P, D>(
-    sys: &PromiseSystem<A, P, D>,
+pub fn directory_of<A, P, D, R>(
+    sys: &PromiseSystem<A, P, D, R>,
     superagent: &A,
 ) -> CoarseGrainingDirectory<A, P>
 where

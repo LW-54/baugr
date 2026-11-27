@@ -26,34 +26,34 @@ private theorem noOpaqueWall_false_of_crossing {A : Type} [DecidableEq A]
   refine ⟨s, hs_mem, ?_⟩
   simp [hs_op, hin, hout.1, hout.2]
 
-/-- T7a (outward): An offer inside an opaque superagent cannot bind externally. -/
+/-- T7a (outward): An offer (fixed or derived) inside an opaque superagent cannot bind externally. -/
 theorem opaque_non_piercing {A P O U M : Type} [DecidableEq A]
     (sys : PromiseSystem A P O U M) (s : A)
     (hs_mem : s ∈ sys.agents) (hs_op : sys.hierarchy.isOpaque s = true)
-    (po pu : Promise A P O U)
+    (po pu : Promise A P O U M)
     (hin  : isStrictAncAux sys.hierarchy sys.agents.length s po.promiser = true)
     (hout : pu.promiser ≠ s ∧ isStrictAncAux sys.hierarchy sys.agents.length s pu.promiser = false) :
-    staticBindable sys po pu = false := by
+    mayBind sys po pu = false := by
   have hwall := noOpaqueWall_false_of_crossing sys.hierarchy sys.agents s
     po.promiser pu.promiser hs_mem hs_op hin hout
-  cases hpo : po.body <;> cases hpu : pu.body <;> simp [staticBindable, hwall, hpo, hpu]
+  simp [mayBind, structBindable, hwall]
 
-/-- T7a (inward): An external offer cannot pierce into a strict sub-agent's Use. -/
+/-- T7a (inward): An external offer (fixed or derived) cannot pierce into a strict sub-agent's Use. -/
 theorem opaque_non_piercing_inward {A P O U M : Type} [DecidableEq A]
     (sys : PromiseSystem A P O U M) (s : A)
     (hs_mem : s ∈ sys.agents) (hs_op : sys.hierarchy.isOpaque s = true)
-    (po pu : Promise A P O U)
+    (po pu : Promise A P O U M)
     (hout : po.promiser ≠ s ∧ isStrictAncAux sys.hierarchy sys.agents.length s po.promiser = false)
     (hin  : isStrictAncAux sys.hierarchy sys.agents.length s pu.promiser = true) :
-    staticBindable sys po pu = false := by
+    mayBind sys po pu = false := by
   have hwall : noOpaqueWall sys.hierarchy sys.agents po.promiser pu.promiser = false := by
     rw [noOpaqueWall_symm]
     exact noOpaqueWall_false_of_crossing sys.hierarchy sys.agents s
       pu.promiser po.promiser hs_mem hs_op hin hout
-  cases hpo : po.body <;> cases hpu : pu.body <;> simp [staticBindable, hwall, hpo, hpu]
+  simp [mayBind, structBindable, hwall]
 
-/-- T7b: Interior perturbations of an opaque superagent cannot affect external promises
-    whose causal cone stays outside the superagent's interior. -/
+/-- T7b: Interior perturbations of an opaque superagent cannot affect external promises'
+    resolved bodies when their reverse causal cone stays outside the superagent's interior. -/
 theorem opaque_interior_perturbation_contained {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) (α₁ α₂ : Assessment A P)
     (rank : P → Nat) (steps maxS : Nat) (s : A) (ext : P)

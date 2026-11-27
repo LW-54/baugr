@@ -1,15 +1,16 @@
-//! Domain-agnostic integration tests, invariant proofs, and purity guards for `baugr` v0.2.
+//! Domain-agnostic integration tests, value-derived conditional promise proofs,
+//! static upper-bound discharge tests, invariant proofs, and purity guards for `baugr` v0.3.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use baugr::{
-    AgentSet, AgreementConflict, Binding, BodyAlgebra, CoarseGrainError, Cond, ConditionWarning,
-    EvalError, HierarchyError, LinkKind, MaxOne, NodeKind, Promise, PromiseSystem,
-    ProviderCardinalityError, QuorumLaw, QuorumShortfall, ResolutionView, ResourceMonoid, SstError,
-    SstGraph, SstNode, SymmetricMeet, Unbounded, UniqueProviderLaw, ValencyLaw, directory_of,
-    project_sst,
+    AgentSet, AgreementConflict, Binding, Body, BodyAlgebra, BudgetDeficit, CoarseGrainError, Cond,
+    ConditionWarning, DeriveAlgebra, EvalError, HierarchyError, LinkKind, LocalView, MaxOne,
+    NodeKind, Obs, Promise, PromiseSystem, ProviderCardinalityError, QuorumLaw, QuorumShortfall,
+    ResolutionView, ResourceMonoid, SstError, SstGraph, SstNode, SymmetricMeet, Unbounded,
+    UniqueProviderLaw, ValencyLaw, directory_of, project_sst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,13 +84,23 @@ fn build_microgrid() -> PromiseSystem<&'static str, &'static str, GridAlgebra> {
 }
 
 #[test]
-fn domain_microgrid_stratified_failover_and_monoidal_valency() {
+fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
     let mut sys = build_microgrid();
+
+    // Static upper-bound discharge (Lean theorem `static_discharge_universal`):
+    // Even though `bat:backup` is OFF under optimistic α, `static_upper_bound()` includes
+    // its worst-case 1000W hospital load and proves 1000W <= 1500W for ALL runtime scenarios α!
+    let upper = sys.static_upper_bound();
+    assert!(
+        ResolutionView::new(&sys, &upper)
+            .check_valency("bat:backup", 1500_u32, |b| b.overlap)
+            .is_ok()
+    );
 
     // Normal operation: mains kept -> battery backup stays off; hospital uniquely uses grid.
     let r_normal = sys.resolve_optimistic().expect("stratified");
-    assert!(r_normal.quenched.contains("grid:mains"));
-    assert!(!r_normal.quenched.contains("bat:backup"));
+    assert!(r_normal.is_quenched("grid:mains"));
+    assert!(!r_normal.is_quenched("bat:backup"));
     assert!(
         ResolutionView::new(&sys, &r_normal)
             .check(&UniqueProviderLaw {
@@ -98,9 +109,16 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
             .is_ok()
     );
 
+    // Consistent self-assessment: if battery's own sensor `bat:sense_grid` fails,
+    // `Assisted("bat:sense_grid")` becomes false and failover triggers!
+    let r_sensor_fail = sys
+        .resolve(|obs, p| !(*obs == "battery" && *p == "bat:sense_grid"))
+        .expect("stratified");
+    assert!(r_sensor_fail.is_quenched("bat:backup"));
+
     // Outage: mains broken -> battery backup quenches; 1000W <= 1500W valency holds.
     let r_outage = sys.resolve(|_, p| *p != "grid:mains").expect("stratified");
-    assert!(r_outage.quenched.contains("bat:backup"));
+    assert!(r_outage.is_quenched("bat:backup"));
     assert!(
         r_outage
             .bindings
@@ -114,7 +132,8 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
     };
     assert!(ResolutionView::new(&sys, &r_outage).check(&cap_law).is_ok());
 
-    // Add 800W factory load -> 1800W > 1500W valency deficit implementing core::error::Error.
+    // Add 800W factory load -> `static_upper_bound()` IMMEDIATELY catches the hidden blackout
+    // overdraw (1800W > 1500W) even though optimistic α draws 0W from `bat:backup`!
     sys.add_promise(Promise::accept(
         "fact:draw",
         "factory",
@@ -124,6 +143,13 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
             watts: 800,
         },
     ));
+    let upper_over = sys.static_upper_bound();
+    let static_err = ResolutionView::new(&sys, &upper_over)
+        .check(&cap_law)
+        .expect_err("static upper bound catches blackout overdraw");
+    assert_eq!(static_err.used, 1800);
+    assert_eq!(static_err.capacity, 1500);
+
     let r_overload = sys.resolve(|_, p| *p != "grid:mains").expect("stratified");
     let err = ResolutionView::new(&sys, &r_overload)
         .check(&cap_law)
@@ -137,7 +163,7 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
     let r_split = sys
         .resolve(|obs, p| !(*obs == "battery" && *p == "grid:mains"))
         .expect("stratified");
-    assert!(r_split.quenched.contains("bat:backup"));
+    assert!(r_split.is_quenched("bat:backup"));
     assert!(
         r_split
             .bindings
@@ -150,6 +176,390 @@ fn domain_microgrid_stratified_failover_and_monoidal_valency() {
             .iter()
             .any(|b| b.offer_id == "bat:backup" && b.consumer == "factory")
     );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AllocOffer {
+    Cell(u32),
+    Req { watts: u32, prio: u8 },
+    Grant(u32),
+    DrawNotice(u32),
+    Diesel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AllocUse {
+    AcceptReq,
+    ObserveNotice,
+    Draw { min: u32, max: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AllocRule {
+    PriorityGrant { recipient: &'static str },
+    ProportionalGrant { recipient: &'static str },
+    PeerResidualUse { pool_cap: u32, max_wanted: u32 },
+    ResidualReq { total_wanted: u32 },
+}
+
+struct AllocAlg;
+
+impl BodyAlgebra for AllocAlg {
+    type Offer = AllocOffer;
+    type Use = AllocUse;
+    type Overlap = u32;
+    fn overlap(&self, o: &AllocOffer, u: &AllocUse) -> Option<u32> {
+        match (o, u) {
+            (AllocOffer::Req { watts, .. }, AllocUse::AcceptReq)
+            | (AllocOffer::DrawNotice(watts), AllocUse::ObserveNotice) => Some(*watts),
+            (AllocOffer::Grant(w), AllocUse::Draw { min, max }) if w >= min => Some((*w).min(*max)),
+            _ => None,
+        }
+    }
+}
+
+impl DeriveAlgebra<&'static str, &'static str, AllocRule> for AllocAlg {
+    fn derive_offer(
+        &self,
+        rule: &AllocRule,
+        obs: &LocalView<'_, &'static str, &'static str, Self>,
+    ) -> Option<AllocOffer> {
+        let cap: u32 = obs
+            .interior_entries()
+            .iter()
+            .filter_map(|(_, _, b)| match b {
+                Body::Offer(AllocOffer::Cell(w)) => Some(*w),
+                _ => None,
+            })
+            .sum();
+        match rule {
+            AllocRule::PriorityGrant { recipient } => {
+                let mut reqs: Vec<(u8, &'static str, u32)> = obs
+                    .assisted("bank:recv")
+                    .filter_map(|e| match e.offer {
+                        AllocOffer::Req { watts, prio } => Some((*prio, *e.promiser, *watts)),
+                        _ => None,
+                    })
+                    .collect();
+                reqs.sort_by_key(|(p, a, _)| (*p, *a));
+                let mut rem = cap;
+                for (_, agent, wanted) in reqs {
+                    let g = wanted.min(rem);
+                    rem = rem.saturating_sub(g);
+                    if agent == *recipient {
+                        return (g > 0).then_some(AllocOffer::Grant(g));
+                    }
+                }
+                None
+            }
+            AllocRule::ProportionalGrant { recipient } => {
+                let reqs: Vec<(&'static str, u32)> = obs
+                    .assisted("bank:recv")
+                    .filter_map(|e| match e.offer {
+                        AllocOffer::Req { watts, .. } => Some((*e.promiser, *watts)),
+                        _ => None,
+                    })
+                    .collect();
+                let total: u32 = reqs.iter().map(|(_, w)| *w).sum();
+                if total == 0 {
+                    return None;
+                }
+                for (agent, wanted) in reqs {
+                    if agent == *recipient {
+                        let g = if total <= cap {
+                            wanted
+                        } else {
+                            wanted.saturating_mul(cap).checked_div(total).unwrap_or(0)
+                        };
+                        return (g > 0).then_some(AllocOffer::Grant(g));
+                    }
+                }
+                None
+            }
+            AllocRule::ResidualReq { total_wanted } => {
+                let got: u32 = obs.assisted("clinic:draw").map(|e| e.overlap).sum();
+                let left = total_wanted.saturating_sub(got);
+                (left > 0).then_some(AllocOffer::Req {
+                    watts: left,
+                    prio: 1,
+                })
+            }
+            AllocRule::PeerResidualUse { .. } => None,
+        }
+    }
+
+    fn derive_use(
+        &self,
+        rule: &AllocRule,
+        obs: &LocalView<'_, &'static str, &'static str, Self>,
+    ) -> Option<AllocUse> {
+        match rule {
+            AllocRule::PeerResidualUse {
+                pool_cap,
+                max_wanted,
+            } => {
+                let taken: u32 = obs.assisted("clinic:watch_hosp").map(|e| e.overlap).sum();
+                let left = pool_cap.saturating_sub(taken).min(*max_wanted);
+                (left > 0).then_some(AllocUse::Draw { min: 1, max: left })
+            }
+            _ => None,
+        }
+    }
+}
+
+fn build_alloc_bank_system() -> Result<
+    PromiseSystem<&'static str, &'static str, AllocAlg, AllocRule>,
+    HierarchyError<&'static str>,
+> {
+    let mut sys = PromiseSystem::with_rules(AllocAlg);
+    sys.add_superagent("bank", true);
+    for (c, pid) in [("c1", "c1:p"), ("c2", "c2:p"), ("c3", "c3:p")] {
+        sys.contain("bank", c)?;
+        sys.add_promise(Promise::offer(pid, c, AgentSet::All, AllocOffer::Cell(750)));
+    }
+    sys.add_promise(
+        Promise::accept(
+            "bank:recv",
+            "bank",
+            AgentSet::of(["hosp", "clinic"]),
+            AllocUse::AcceptReq,
+        )
+        .with_scope(AgentSet::All),
+    );
+    sys.add_promise(Promise::offer(
+        "hosp:req",
+        "hosp",
+        AgentSet::single("bank"),
+        AllocOffer::Req {
+            watts: 1000,
+            prio: 1,
+        },
+    ));
+    sys.add_promise(Promise::offer(
+        "clinic:req",
+        "clinic",
+        AgentSet::single("bank"),
+        AllocOffer::Req {
+            watts: 800,
+            prio: 2,
+        },
+    ));
+    let bank_obs = vec![
+        Obs::assisted("bank:recv"),
+        Obs::interior("c1:p"),
+        Obs::interior("c2:p"),
+        Obs::interior("c3:p"),
+    ];
+    sys.add_promise(Promise::derive_offer(
+        "bank:grant_hosp",
+        "bank",
+        AgentSet::single("hosp"),
+        bank_obs.clone(),
+        AllocRule::PriorityGrant { recipient: "hosp" },
+    ));
+    sys.add_promise(Promise::derive_offer(
+        "bank:grant_clinic",
+        "bank",
+        AgentSet::single("clinic"),
+        bank_obs,
+        AllocRule::PriorityGrant {
+            recipient: "clinic",
+        },
+    ));
+    sys.add_promise(Promise::accept(
+        "hosp:draw",
+        "hosp",
+        AgentSet::single("bank"),
+        AllocUse::Draw {
+            min: 1000,
+            max: 1000,
+        },
+    ));
+    sys.add_promise(
+        Promise::accept(
+            "clinic:draw",
+            "clinic",
+            AgentSet::single("bank"),
+            AllocUse::Draw { min: 1, max: 800 },
+        )
+        .with_scope(AgentSet::All),
+    );
+    sys.add_promise(Promise::derive_offer(
+        "clinic:req_aux",
+        "clinic",
+        AgentSet::single("aux"),
+        vec![Obs::assisted("clinic:draw")],
+        AllocRule::ResidualReq { total_wanted: 800 },
+    ));
+    sys.add_promise(
+        Promise::offer(
+            "clinic:diesel",
+            "clinic",
+            AgentSet::single("clinic"),
+            AllocOffer::Diesel,
+        )
+        .when(!Cond::assisted("clinic:draw")),
+    );
+    Ok(sys)
+}
+
+#[test]
+fn domain_value_derived_provider_allocation_and_grouped_budget() {
+    let mut sys = build_alloc_bank_system().expect("acyclic");
+
+    let r = sys
+        .resolve(|obs, p| !(*obs == "bank" && *p == "c1:p"))
+        .expect("stratified");
+    assert_eq!(r.offer("bank:grant_hosp"), Some(&AllocOffer::Grant(1000)));
+    assert_eq!(r.offer("bank:grant_clinic"), Some(&AllocOffer::Grant(500)));
+    assert_eq!(
+        r.offer("clinic:req_aux"),
+        Some(&AllocOffer::Req {
+            watts: 300,
+            prio: 1
+        })
+    );
+    assert!(!r.is_quenched("clinic:diesel"));
+
+    let view = ResolutionView::new(&sys, &r);
+    assert!(
+        view.check_budget(
+            |_, b| (b.promiser == "bank").then_some((b.promiser, b.overlap)),
+            |_| 1500_u32
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        view.check_budget(
+            |_, b| (b.promiser == "bank").then_some((b.promiser, b.overlap)),
+            |_| 1400_u32
+        ),
+        Err(BudgetDeficit {
+            group: "bank",
+            used: 1500,
+            capacity: 1400,
+        })
+    );
+
+    sys.add_promise(
+        Promise::accept(
+            "clinic:draw",
+            "clinic",
+            AgentSet::single("bank"),
+            AllocUse::Draw { min: 800, max: 800 },
+        )
+        .with_scope(AgentSet::All),
+    );
+    let r_strict = sys
+        .resolve(|obs, p| !(*obs == "bank" && *p == "c1:p"))
+        .expect("stratified");
+    assert!(r_strict.is_quenched("clinic:diesel"));
+    let r_solo = sys
+        .resolve(|obs, p| !(*obs == "bank" && matches!(*p, "c1:p" | "hosp:req")))
+        .expect("stratified");
+    assert_eq!(
+        r_solo.offer("bank:grant_clinic"),
+        Some(&AllocOffer::Grant(800))
+    );
+    assert!(!r_solo.is_quenched("clinic:diesel"));
+
+    let bank_obs = vec![
+        Obs::assisted("bank:recv"),
+        Obs::interior("c1:p"),
+        Obs::interior("c2:p"),
+        Obs::interior("c3:p"),
+    ];
+    sys.add_promise(Promise::derive_offer(
+        "bank:grant_hosp",
+        "bank",
+        AgentSet::single("hosp"),
+        bank_obs.clone(),
+        AllocRule::ProportionalGrant { recipient: "hosp" },
+    ));
+    sys.add_promise(Promise::derive_offer(
+        "bank:grant_clinic",
+        "bank",
+        AgentSet::single("clinic"),
+        bank_obs,
+        AllocRule::ProportionalGrant {
+            recipient: "clinic",
+        },
+    ));
+    let r_prop = sys
+        .resolve(|obs, p| !(*obs == "bank" && *p == "c1:p"))
+        .expect("stratified");
+    assert_eq!(
+        r_prop.offer("bank:grant_hosp"),
+        Some(&AllocOffer::Grant(833))
+    );
+    assert_eq!(
+        r_prop.offer("bank:grant_clinic"),
+        Some(&AllocOffer::Grant(666))
+    );
+}
+
+#[test]
+fn domain_value_derived_peer_residual_and_cycle_rejection() {
+    let mut peer = PromiseSystem::with_rules(AllocAlg);
+    peer.add_promise(Promise::offer(
+        "bus",
+        "grid",
+        AgentSet::All,
+        AllocOffer::Grant(1500),
+    ));
+    peer.add_promise(Promise::offer(
+        "hosp:notice",
+        "hosp",
+        AgentSet::All,
+        AllocOffer::DrawNotice(1000),
+    ));
+    peer.add_promise(Promise::accept(
+        "clinic:watch_hosp",
+        "clinic",
+        AgentSet::single("hosp"),
+        AllocUse::ObserveNotice,
+    ));
+    peer.add_promise(Promise::derive_use(
+        "clinic:draw_leftover",
+        "clinic",
+        AgentSet::single("grid"),
+        vec![Obs::assisted("clinic:watch_hosp")],
+        AllocRule::PeerResidualUse {
+            pool_cap: 1500,
+            max_wanted: 800,
+        },
+    ));
+    let r_peer = peer.resolve_optimistic().expect("stratified");
+    assert_eq!(
+        r_peer.use_body("clinic:draw_leftover"),
+        Some(&AllocUse::Draw { min: 1, max: 500 })
+    );
+    assert!(
+        r_peer
+            .bindings
+            .iter()
+            .any(|b| b.use_id == "clinic:draw_leftover" && b.overlap == 500)
+    );
+
+    let mut cyc = PromiseSystem::with_rules(AllocAlg);
+    cyc.add_promise(Promise::derive_offer(
+        "a",
+        "x",
+        AgentSet::All,
+        vec![Obs::self_promise("b")],
+        AllocRule::ResidualReq { total_wanted: 10 },
+    ));
+    cyc.add_promise(Promise::derive_offer(
+        "b",
+        "x",
+        AgentSet::All,
+        vec![Obs::self_promise("a")],
+        AllocRule::ResidualReq { total_wanted: 10 },
+    ));
+    assert!(matches!(
+        cyc.resolve_optimistic(),
+        Err(EvalError::UnstratifiableCycle(_))
+    ));
 }
 
 #[test]
@@ -168,7 +578,6 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
         sys.contain("raft", n).expect("acyclic");
         sys.add_promise(Promise::offer(n, n, AgentSet::All, Cap::ReplicaVote));
     }
-    // Hierarchy invariants: self-containment and cycles are rejected structurally!
     assert_eq!(
         sys.contain("raft", "raft"),
         Err(HierarchyError::SelfContainment("raft"))
@@ -214,28 +623,25 @@ fn domain_raft_opaque_superagent_and_irreducible_quorum() {
             .when(Cond::assisted("client:use_kv")),
     );
 
-    // 3/3 healthy -> raft:kv & client:app quench; external piercing to n1 blocked!
     let r3 = sys.resolve_optimistic().expect("stratified");
-    assert!(r3.quenched.contains("raft:kv"));
-    assert!(r3.quenched.contains("client:app"));
+    assert!(r3.is_quenched("raft:kv"));
+    assert!(r3.is_quenched("client:app"));
     assert!(!r3.bindings.iter().any(|b| b.use_id == "client:pierce_n1"));
 
-    // 1 node down -> 2/3 quorum still holds; 2 nodes down -> quorum lost!
     let r2 = sys.resolve(|_, p| *p != "n3").expect("stratified");
-    assert!(r2.quenched.contains("raft:kv"));
+    assert!(r2.is_quenched("raft:kv"));
     let r1 = sys
         .resolve(|_, p| *p != "n2" && *p != "n3")
         .expect("stratified");
-    assert!(!r1.quenched.contains("raft:kv"));
-    assert!(!r1.quenched.contains("client:app"));
-    assert!(r1.quenched.contains("client:local_clock"));
+    assert!(!r1.is_quenched("raft:kv"));
+    assert!(!r1.is_quenched("client:app"));
+    assert!(r1.is_quenched("client:local_clock"));
 
     let dir = directory_of(&sys, &"raft");
     assert!(dir.is_opaque);
     assert_eq!(dir.interior_agents, BTreeSet::from(["n1", "n2", "n3"]));
     assert_eq!(dir.surface_promises, BTreeSet::from(["raft:kv"]));
 
-    // Reverse causal light cone J⁻(client:app) excludes unrelated client:local_clock!
     let sst = project_sst(&sys);
     let cone = sst.reverse_causal_cone(&SstNode::Promise("client:app"));
     assert!(cone.contains(&SstNode::Promise("raft:kv")));
@@ -352,11 +758,10 @@ fn domain_tenancy_and_generalized_laws() {
     let mut sys = build_tenancy_fleet().expect("acyclic");
 
     let r = sys.resolve_optimistic().expect("stratified");
-    assert!(r.quenched.contains("h1:slot_80"));
-    assert!(r.quenched.contains("h1:power"));
+    assert!(r.is_quenched("h1:slot_80"));
+    assert!(r.is_quenched("h1:power"));
 
     let view = ResolutionView::new(&sys, &r);
-    // Zero-annotation `check_disjoint` checks per-host port uniqueness across ALL hosts at once!
     let check_ports = |v: &ResolutionView<'_, &'static str, &'static str, CloudAlg>| {
         v.check_disjoint(|s, b| {
             let port = b.overlap.0?;
@@ -366,7 +771,6 @@ fn domain_tenancy_and_generalized_laws() {
     };
     assert!(check_ports(&view).is_ok());
 
-    // Zero-annotation `check_agreement` verifies fleet-wide protocol version 2:
     assert!(
         view.check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
             .is_ok()
@@ -378,7 +782,6 @@ fn domain_tenancy_and_generalized_laws() {
         })
         .is_ok()
     );
-    // Negative paths: QuorumShortfall & ProviderCardinalityError!
     assert_eq!(
         view.check(&QuorumLaw {
             use_id: "t1:use_slot",
@@ -409,7 +812,6 @@ fn domain_tenancy_and_generalized_laws() {
     );
     assert_eq!(MaxOne::One.add(&MaxOne::One), MaxOne::Overflow);
 
-    // Adding a second tenant on host1 taking port 80 triggers DisjointViolation on ("host1", 80)!
     sys.contain("host1", "tenant1b").expect("acyclic");
     sys.add_promise(Promise::accept(
         "t1b:use_slot",
@@ -425,7 +827,6 @@ fn domain_tenancy_and_generalized_laws() {
         .expect_err("expected per-host port collision");
     assert_eq!(err.key, ("host1", 80));
 
-    // Adding a protocol-v3 slot on host2 triggers AgreementConflict!
     sys.add_promise(Promise::offer(
         "h2:slot_443",
         "host2",
@@ -485,8 +886,16 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
         Promise::offer("A:tls", "A", AgentSet::single("B"), CloudSvc::Tls)
             .when(Cond::assisted("A:use_dns")),
     );
+    // Also check SelfPromise incomplete info (B cannot see A's private self-promise)!
+    sys.add_promise(
+        Promise::offer("A:private_flag", "A", AgentSet::single("A"), CloudSvc::Net)
+            .with_scope(AgentSet::single("A")),
+    );
+    sys.add_promise(
+        Promise::offer("A:gated", "A", AgentSet::single("B"), CloudSvc::Dns)
+            .when(Cond::self_promise("A:private_flag")),
+    );
 
-    // Positive circular self-dependency -> cleanly stays unquenched!
     sys.add_promise(
         Promise::offer("X:loop1", "X", AgentSet::All, CloudSvc::Net)
             .when(Cond::self_promise("X:loop2")),
@@ -497,18 +906,18 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
     );
 
     let r = sys.resolve_optimistic().expect("stratified");
-    assert!(r.quenched.contains("A:tls"));
-    assert!(!r.quenched.contains("X:loop1"));
-    assert!(!r.quenched.contains("X:loop2"));
+    assert!(r.is_quenched("A:tls"));
+    assert!(!r.is_quenched("X:loop1"));
+    assert!(!r.is_quenched("X:loop2"));
 
     let warns = sys.check_complete_information();
-    assert!(
-        warns
-            .iter()
-            .any(|w| w.conditional_promise == "A:tls" && w.blind_target == "B")
-    );
+    assert!(warns.iter().any(|w| w.conditional_promise == "A:tls"
+        && w.dependency == "A:use_dns"
+        && w.blind_target == "B"));
+    assert!(warns.iter().any(|w| w.conditional_promise == "A:gated"
+        && w.dependency == "A:private_flag"
+        && w.blind_target == "B"));
 
-    // Negative cycle must be rejected cleanly.
     let mut bad = PromiseSystem::<&str, &str, _>::new(CloudAlg);
     bad.add_promise(
         Promise::offer("p", "z", AgentSet::All, CloudSvc::Net).when(!Cond::self_promise("q")),
@@ -518,19 +927,17 @@ fn domain_bidirectional_protocol_complete_info_and_cycles() {
     );
     assert!(matches!(
         bad.resolve_optimistic(),
-        Err(EvalError::UnstratifiableNegativeCycle(_))
+        Err(EvalError::UnstratifiableCycle(_))
     ));
 }
 
 #[test]
-fn static_lint_overwrites_and_nested_negation() {
-    // Nested double negation `!!p` stays stratifiable in the same stratum & resolves cleanly!
+fn static_lint_overwrites_null_potent_and_nested_negation() {
     let mut dbl = PromiseSystem::<&str, &str, _>::new(CloudAlg);
     assert!(
         dbl.add_promise(Promise::offer("a", "z", AgentSet::All, CloudSvc::Net))
             .is_none()
     );
-    // Overwriting an existing ID returns `Some(previous)` instead of silently dropping it.
     assert!(
         dbl.add_promise(Promise::offer("a", "z", AgentSet::All, CloudSvc::Net))
             .is_some()
@@ -541,16 +948,22 @@ fn static_lint_overwrites_and_nested_negation() {
     let r_dbl = dbl
         .resolve_optimistic()
         .expect("double negation is positive");
-    assert!(r_dbl.quenched.contains("b"));
+    assert!(r_dbl.is_quenched("b"));
     assert_eq!(r_dbl.strata.get("a"), r_dbl.strata.get("b"));
 
-    // Static `lint()` flags dangling refs, wrong promiser, wrong polarity, non-interior, & incomplete info!
     let mut lint_sys = PromiseSystem::<&str, &str, _>::new(CloudAlg);
     lint_sys.add_promise(Promise::offer("x:off", "x", AgentSet::All, CloudSvc::Net));
+    lint_sys.add_promise(Promise::accept(
+        "y:lonely",
+        "y",
+        AgentSet::single("ghost"),
+        CloudSvc::Net,
+    ));
     lint_sys.add_promise(
         Promise::offer("y:bad", "y", AgentSet::All, CloudSvc::Dns).when(Cond::all(vec![
             Cond::self_promise("missing"),
             Cond::assisted("x:off"),
+            Cond::assisted("y:lonely"),
             Cond::interior("x:off"),
         ])),
     );
@@ -583,6 +996,15 @@ fn static_lint_overwrites_and_nested_negation() {
             ..
         }
     )));
+    assert!(diagnostics.iter().any(|w| matches!(
+        w,
+        ConditionWarning::UnsatisfiableMinCount {
+            referenced: "y:lonely",
+            required: 1,
+            max_possible: 0,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -596,7 +1018,6 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
     g.add_node("blue", NodeKind::Concept).unwrap();
     g.add_node("sky", NodeKind::Concept).unwrap();
 
-    // Idempotent re-registration passes; conflicting re-typing is structurally rejected!
     assert!(g.add_node("flight", NodeKind::Event).is_ok());
     assert_eq!(
         g.add_node("flight", NodeKind::Concept),
@@ -607,7 +1028,6 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
         })
     );
 
-    // Burgess's forbidden metaphor & strict γ(3,4) violations -> REJECTED!
     assert!(matches!(
         g.add_edge("love", LinkKind::Near, "butterfly"),
         Err(SstError::DisallowedTransition { .. })
@@ -629,7 +1049,6 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
             .is_err()
     );
 
-    // Dual inverse links: `landing -L flight` normalizes cleanly to `flight +L landing`!
     g.add_edge("landing", LinkKind::Follows, "flight").unwrap();
     g.add_edge("flight", LinkKind::Contains, "butterfly")
         .unwrap();
@@ -646,13 +1065,11 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
     );
     assert!(g.sources(LinkKind::LeadsTo).contains("flight"));
     assert!(g.sinks(LinkKind::LeadsTo).contains("landing"));
-    // Symmetric Near works in both directions!
     assert!(
         g.reachable_along(&"sky", LinkKind::Near, false)
             .contains("blue")
     );
 
-    // Unknown node rejected cleanly; appointed_hubs & branching_points work on normalized axes!
     assert_eq!(
         g.add_edge("ghost", LinkKind::LeadsTo, "flight"),
         Err(SstError::UnknownNode("ghost"))
@@ -665,7 +1082,6 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
     assert!(g.branching_points(LinkKind::LeadsTo).contains("flight"));
     assert!(g.appointed_hubs(LinkKind::LeadsTo).contains("landing"));
 
-    // Kind-homogeneous coarse graining collapses butterfly+wing -> insect (Thing).
     let q = g
         .coarse_grain(|n| match *n {
             "butterfly" | "wing" => "insect",
@@ -676,7 +1092,6 @@ fn strict_gamma_3_4_invariants_dual_links_and_coarse_graining() {
     assert_eq!(q.axis_edges(LinkKind::Contains).len(), 1);
     assert_eq!(q.axis_edges(LinkKind::Expresses).len(), 1);
 
-    // Inhomogeneous coarse grain (merging Event + Thing) cleanly rejected!
     assert!(matches!(
         g.coarse_grain(|n| if *n == "flight" || *n == "butterfly" {
             "bad"

@@ -20,7 +20,8 @@ def sstNodeKind {A P : Type} : SstNode A P → NodeKind
   | .intent  _ => .concept
 
 /-- Canonical functor Φ : PromiseSystem → SstGraph (SstNode A P).
-    Every emitted edge obeys strict γ(3,4) typing by construction (`projectSst_wellFormed`). -/
+    Every emitted edge obeys strict γ(3,4) typing by construction (`projectSst_wellFormed`),
+    capturing both boolean quenching (`condDeps`) and value-derivation (`obsDeps`) causality. -/
 def projectSst {A P O U M : Type} [DecidableEq A] [DecidableEq P]
     (sys : PromiseSystem A P O U M) : SstGraph (SstNode A P) :=
   let containmentEdges : List (SstEdge (SstNode A P)) :=
@@ -38,7 +39,7 @@ def projectSst {A P O U M : Type} [DecidableEq A] [DecidableEq P]
       ]
   let causalEdges : List (SstEdge (SstNode A P)) :=
     sys.promises.flatMap fun pr =>
-      (condDeps sys false pr.cond).filterMap fun (dep, _) =>
+      (promiseDeps sys pr).filterMap fun (dep, _) =>
         match sys.find? dep with
         | some _ => some { src := .promise dep, kind := .leadsTo, dst := .promise pr.id } -- e +L e
         | none   => none

@@ -13,7 +13,7 @@ import Baugr
 #print axioms Baugr.inference_near_expresses
 #print axioms Baugr.coarseGrain_wellFormed
 
--- T1–T3: Knaster-Tarski Quenching, Cycle Rejection, Convergence & Stratification Independence
+-- T1–T3: Value-Carrying Knaster-Tarski Quenching, Cycle Rejection, Convergence & Stratification Independence
 #print axioms Baugr.evalCond_mono
 #print axioms Baugr.evalCond_mono_pol
 #print axioms Baugr.quenchStep_mono
@@ -27,10 +27,10 @@ import Baugr
 #print axioms Baugr.evalStratified_fixed_point
 #print axioms Baugr.stratification_independent
 
--- T4: Axiom of Autonomy
+-- T4: Axiom of Autonomy (Conditions + Derived Observations + Value Bodies)
 #print axioms Baugr.autonomy_unaccepted_offer_inert
 
--- T5d & T6: Canonical Functor Φ & Reverse Light Cone Perturbation Containment
+-- T5d & T6: Canonical Functor Φ & Reverse Light Cone Perturbation Containment (Value Bodies)
 #print axioms Baugr.projectSst_wellFormed
 #print axioms Baugr.perturbation_in_reverse_cone
 
@@ -40,6 +40,10 @@ import Baugr
 #print axioms Baugr.opaque_non_piercing_inward
 #print axioms Baugr.opaque_interior_perturbation_contained
 
--- T8: Monoidal Valency & Composable ScopeLaws
+-- T8: Monoidal Valency, Composable ScopeLaws & Universal Static Discharge
 #print axioms Baugr.valency_withdrawal_safe
 #print axioms Baugr.allLaws_cons
+#print axioms Baugr.activeBindings_subset_staticMax
+#print axioms Baugr.static_discharge_universal
+#print axioms Baugr.disjoint_downward_closed
+#print axioms Baugr.agreement_downward_closed

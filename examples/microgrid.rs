@@ -1,46 +1,151 @@
-//! Microgrid failover with an opaque 2-of-3 battery-bank superagent, observer-local
-//! split blackout, blocked piercing, `Accepted` audit trigger, light cones, directory,
-//! and collective `ScopeLaw` checks (`valency` + `agreement`).
+//! Microgrid failover with an opaque 2-of-3 battery-bank superagent, emergent
+//! interior-cell capacity, voluntary Request -> Computed Grant priority allocation
+//! (`+f(obs) | C`), autonomous consumer handling (partial take + multi-provider
+//! residual split vs. all-or-nothing automatic diesel failover), blocked piercing,
+//! grouped `BudgetBy` + `AgreementBy`, light cones, and superagent directory.
 //!
 //! Run with: `cargo run --example microgrid`
 
 use baugr::{
-    AgentSet, BodyAlgebra, Cond, HierarchyError, Promise, PromiseSystem, ResolutionView, SstNode,
-    directory_of, project_sst,
+    AgentSet, BodyAlgebra, Cond, DeriveAlgebra, HierarchyError, LocalView, Obs, Promise,
+    PromiseSystem, ResolutionView, SstNode, directory_of, project_sst,
 };
 
-#[derive(Clone, Debug)]
-struct PowerOffer {
-    voltage: u16,
-    max_watts: u32,
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GridOffer {
+    CellPower { watts: u32 },
+    Request { watts: u32, priority: u8 },
+    Power { voltage: u16, watts: u32 },
+    LocalDiesel { watts: u32 },
 }
 
-#[derive(Clone, Debug)]
-struct PowerUse {
-    voltage: u16,
-    watts: u32,
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GridUse {
+    AcceptRequests,
+    DrawPower {
+        voltage: u16,
+        min_watts: u32,
+        max_watts: u32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GridOverlap {
+    Requested { watts: u32, priority: u8 },
+    Supplied { voltage: u16, watts: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GridRule {
+    /// Emergent 2-of-3 battery-bank priority allocator: computes total available
+    /// wattage from healthy interior cells, sorts accepted requests by priority
+    /// (lower number = higher priority), and offers `recipient` its exact share.
+    PriorityGrant { recipient: &'static str },
+    /// Consumer-side residual split: requests `total_wanted - received` from a
+    /// secondary provider when the primary grant only partially satisfies demand.
+    ResidualRequest {
+        primary_use: &'static str,
+        total_wanted: u32,
+        priority: u8,
+    },
 }
 
 struct GridAlgebra;
 
 impl BodyAlgebra for GridAlgebra {
-    type Offer = PowerOffer;
-    type Use = PowerUse;
-    type Overlap = (u16, u32); // agreed (voltage, allocated_watts)
+    type Offer = GridOffer;
+    type Use = GridUse;
+    type Overlap = GridOverlap;
 
-    fn overlap(&self, o: &PowerOffer, u: &PowerUse) -> Option<Self::Overlap> {
-        if o.voltage != u.voltage {
-            return None;
+    fn overlap(&self, o: &GridOffer, u: &GridUse) -> Option<Self::Overlap> {
+        match (o, u) {
+            (GridOffer::Request { watts, priority }, GridUse::AcceptRequests) => {
+                Some(GridOverlap::Requested {
+                    watts: *watts,
+                    priority: *priority,
+                })
+            }
+            (
+                GridOffer::Power { voltage, watts },
+                GridUse::DrawPower {
+                    voltage: uv,
+                    min_watts,
+                    max_watts,
+                },
+            ) if voltage == uv && *watts >= *min_watts => Some(GridOverlap::Supplied {
+                voltage: *voltage,
+                watts: (*watts).min(*max_watts),
+            }),
+            _ => None,
         }
-        (u.watts <= o.max_watts).then_some((o.voltage, u.watts))
     }
 }
 
-fn build_microgrid()
--> Result<PromiseSystem<&'static str, &'static str, GridAlgebra>, HierarchyError<&'static str>> {
-    let mut sys = PromiseSystem::new(GridAlgebra);
+impl DeriveAlgebra<&'static str, &'static str, GridRule> for GridAlgebra {
+    fn derive_offer(
+        &self,
+        rule: &GridRule,
+        obs: &LocalView<'_, &'static str, &'static str, Self>,
+    ) -> Option<GridOffer> {
+        match rule {
+            GridRule::PriorityGrant { recipient } => {
+                // Emergent capacity = sum of healthy interior cells (0 if < 2 alive).
+                let mut total_cap: u32 = 0;
+                for (_, _, body) in obs.interior_entries() {
+                    if let baugr::Body::Offer(GridOffer::CellPower { watts }) = body {
+                        total_cap = total_cap.saturating_add(*watts);
+                    }
+                }
+                // Gather active voluntary requests and allocate in deterministic priority order.
+                let mut reqs: Vec<(u8, &'static str, u32)> = obs
+                    .assisted("bank:recv_req")
+                    .filter_map(|e| match e.overlap {
+                        GridOverlap::Requested { watts, priority } => {
+                            Some((priority, *e.promiser, watts))
+                        }
+                        GridOverlap::Supplied { .. } => None,
+                    })
+                    .collect();
+                reqs.sort_by_key(|(prio, agent, _)| (*prio, *agent));
 
-    // 1. Opaque superagent `bank` encapsulating three internal battery cells.
+                let mut remaining = total_cap;
+                for (_, agent, wanted) in reqs {
+                    let granted = wanted.min(remaining);
+                    remaining = remaining.saturating_sub(granted);
+                    if agent == *recipient {
+                        return (granted > 0).then_some(GridOffer::Power {
+                            voltage: 230,
+                            watts: granted,
+                        });
+                    }
+                }
+                None
+            }
+            GridRule::ResidualRequest {
+                primary_use,
+                total_wanted,
+                priority,
+            } => {
+                let mut received: u32 = 0;
+                for e in obs.assisted(*primary_use) {
+                    if let GridOverlap::Supplied { watts, .. } = e.overlap {
+                        received = received.saturating_add(watts);
+                    }
+                }
+                let deficit = total_wanted.saturating_sub(received);
+                (deficit > 0).then_some(GridOffer::Request {
+                    watts: deficit,
+                    priority: *priority,
+                })
+            }
+        }
+    }
+}
+
+type MicrogridSystem = PromiseSystem<&'static str, &'static str, GridAlgebra, GridRule>;
+
+fn add_battery_bank(sys: &mut MicrogridSystem) -> Result<(), HierarchyError<&'static str>> {
+    // 1. Opaque superagent `bank` encapsulating three 800W internal battery cells.
     sys.add_superagent("bank", true);
     for (cell, pid) in [
         ("cell1", "cell1:chg"),
@@ -52,21 +157,18 @@ fn build_microgrid()
             pid,
             cell,
             AgentSet::All,
-            PowerOffer {
-                voltage: 230,
-                max_watts: 800,
-            },
+            GridOffer::CellPower { watts: 800 },
         ));
     }
 
-    // 2. Municipal mains + site-visible grid sensing (target != visibility scope).
+    // 2. Municipal mains + site-visible grid sensing + bank request intake.
     sys.add_promise(Promise::offer(
         "grid:mains",
         "grid",
         AgentSet::All,
-        PowerOffer {
+        GridOffer::Power {
             voltage: 230,
-            max_watts: 5000,
+            watts: 5000,
         },
     ));
     sys.add_promise(
@@ -74,157 +176,216 @@ fn build_microgrid()
             "bank:sense",
             "bank",
             AgentSet::single("grid"),
-            PowerUse {
+            GridUse::DrawPower {
                 voltage: 230,
-                watts: 0,
+                min_watts: 0,
+                max_watts: 0,
             },
         )
         .with_scope(AgentSet::All),
     );
-
-    // 3. Irreducible emergent failover offer on `bank`'s surface:
-    //    quenches iff mains sensing fails AND >= 2 of 3 interior cells are healthy.
     sys.add_promise(
-        Promise::offer(
-            "bank:backup",
+        Promise::accept(
+            "bank:recv_req",
             "bank",
-            AgentSet::All,
-            PowerOffer {
-                voltage: 230,
-                max_watts: 1500,
-            },
+            AgentSet::of(["hospital", "clinic"]),
+            GridUse::AcceptRequests,
         )
-        .when(Cond::all(vec![
-            !Cond::assisted("bank:sense"),
-            Cond::at_least(
-                2,
-                vec![
-                    Cond::interior("cell1:chg"),
-                    Cond::interior("cell2:chg"),
-                    Cond::interior("cell3:chg"),
-                ],
-            ),
-        ])),
+        .with_scope(AgentSet::All),
     );
 
-    // 4. Voluntary acceptance trigger: activates only once someone accepts `bank:backup`.
-    sys.add_promise(
-        Promise::offer(
-            "bank:audit",
-            "bank",
-            AgentSet::All,
-            PowerOffer {
-                voltage: 230,
-                max_watts: 0,
-            },
-        )
-        .when(Cond::accepted("bank:backup")),
-    );
+    // 3. Value-derived emergent failover offers (`+f(obs) | C`) on `bank`'s surface:
+    //    active iff mains fails AND >= 2 of 3 interior cells are healthy.
+    //    Capacity is computed dynamically from healthy cells (`2*800 = 1600W` or `3*800 = 2400W`)!
+    let failover_cond = Cond::all(vec![
+        !Cond::assisted("bank:sense"),
+        Cond::at_least(
+            2,
+            vec![
+                Cond::interior("cell1:chg"),
+                Cond::interior("cell2:chg"),
+                Cond::interior("cell3:chg"),
+            ],
+        ),
+    ]);
+    let bank_obs = vec![
+        Obs::assisted("bank:recv_req"),
+        Obs::interior("cell1:chg"),
+        Obs::interior("cell2:chg"),
+        Obs::interior("cell3:chg"),
+    ];
+    for (pid, recipient) in [
+        ("bank:grant_hosp", "hospital"),
+        ("bank:grant_clinic", "clinic"),
+    ] {
+        sys.add_promise(
+            Promise::derive_offer(
+                pid,
+                "bank",
+                AgentSet::single(recipient),
+                bank_obs.clone(),
+                GridRule::PriorityGrant { recipient },
+            )
+            .when(failover_cond.clone()),
+        );
+    }
+    Ok(())
+}
 
-    // 5. Hospital draws 1000W from {grid, bank}; piercing `cell1` directly is blocked!
+fn add_consumers(sys: &mut MicrogridSystem, clinic_min_watts: u32) {
+    // 4. Consumers voluntarily state their demand & priority to `bank`.
+    sys.add_promise(Promise::offer(
+        "hosp:req",
+        "hospital",
+        AgentSet::single("bank"),
+        GridOffer::Request {
+            watts: 1000,
+            priority: 1,
+        },
+    ));
+    sys.add_promise(Promise::offer(
+        "clinic:req",
+        "clinic",
+        AgentSet::single("bank"),
+        GridOffer::Request {
+            watts: 800,
+            priority: 2,
+        },
+    ));
+
+    // 5. Consumers freely decide how to handle their received offers:
+    //    - hospital draws 1000W from {grid, bank}; direct piercing of `cell1` is blocked!
+    //    - clinic draws from `bank` with its own autonomous `min_watts` threshold;
+    //      if denied, its local diesel backup activates; if partially satisfied, it
+    //      requests the exact residual deficit from secondary provider `aux`!
     sys.add_promise(Promise::accept(
         "hosp:draw",
         "hospital",
         AgentSet::of(["grid", "bank"]),
-        PowerUse {
+        GridUse::DrawPower {
             voltage: 230,
-            watts: 1000,
+            min_watts: 1000,
+            max_watts: 1000,
         },
     ));
     sys.add_promise(Promise::accept(
         "hosp:pierce",
         "hospital",
         AgentSet::single("cell1"),
-        PowerUse {
+        GridUse::DrawPower {
             voltage: 230,
-            watts: 500,
+            min_watts: 1,
+            max_watts: 500,
         },
     ));
+    sys.add_promise(
+        Promise::accept(
+            "clinic:draw",
+            "clinic",
+            AgentSet::single("bank"),
+            GridUse::DrawPower {
+                voltage: 230,
+                min_watts: clinic_min_watts,
+                max_watts: 800,
+            },
+        )
+        .with_scope(AgentSet::All),
+    );
+    sys.add_promise(
+        Promise::offer(
+            "clinic:diesel",
+            "clinic",
+            AgentSet::single("clinic"),
+            GridOffer::LocalDiesel { watts: 800 },
+        )
+        .when(!Cond::assisted("clinic:draw")),
+    );
+    sys.add_promise(Promise::derive_offer(
+        "clinic:req_aux",
+        "clinic",
+        AgentSet::single("aux"),
+        vec![Obs::assisted("clinic:draw")],
+        GridRule::ResidualRequest {
+            primary_use: "clinic:draw",
+            total_wanted: 800,
+            priority: 1,
+        },
+    ));
+    sys.add_promise(Promise::accept(
+        "aux:recv_req",
+        "aux",
+        AgentSet::single("clinic"),
+        GridUse::AcceptRequests,
+    ));
+}
 
+fn build_microgrid(clinic_min_watts: u32) -> Result<MicrogridSystem, HierarchyError<&'static str>> {
+    let mut sys = PromiseSystem::with_rules(GridAlgebra);
+    add_battery_bank(&mut sys)?;
+    add_consumers(&mut sys, clinic_min_watts);
     Ok(sys)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut sys = build_microgrid()?;
-    let warnings = sys.lint();
+    // Mode A: Clinic accepts partial grants (`min_watts = 1`) and splits any residual to `aux`.
+    let partial_sys = build_microgrid(1)?;
+    let warnings = partial_sys.lint();
     if !warnings.is_empty() {
         return Err(format!("unexpected lint warnings: {warnings:?}").into());
     }
 
-    // Healthy mains: backup & audit stay idle; piercing cell1 is blocked by opaque wall.
-    let healthy = sys.resolve_optimistic()?;
-    let healthy_pierced = healthy.bindings.iter().any(|b| b.use_id == "hosp:pierce");
-
-    // Local blackout at `bank` + internal `cell1` crash (2-of-3 quorum survives!).
+    // Outage: mains down at `bank` + `cell1` crashed -> 2 healthy cells = 1600W emergent cap!
+    // Priority grants: hospital gets 1000W, clinic gets leftover 600W, and requests 200W from `aux`.
     let blackout =
         |obs: &&str, p: &&str| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg"));
-    let outage = sys.resolve(blackout)?;
-    let outage_pierced = outage.bindings.iter().any(|b| b.use_id == "hosp:pierce");
+    let partial = partial_sys.resolve(blackout)?;
+    let pierce_blocked = !partial.bindings.iter().any(|b| b.use_id == "hosp:pierce");
 
-    // Collective laws: 1000W <= 1500W valency OK + 230V site-wide agreement C(b) OK.
-    let view = ResolutionView::new(&sys, &outage);
-    view.check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;
-    view.check_agreement(|_, b| Some(("site-bus", b.overlap.0)))?;
-
-    // Limited resources & overdraw handling:
-    // 1) A single oversized demand (2000W > 1500W) is rejected bilaterally by `BodyAlgebra::overlap`.
-    // 2) Adding a second individually valid load (`clinic`, 800W) pushes aggregate load to
-    //    1000W + 800W = 1800W > 1500W -> caught as typed `ValencyDeficit`!
-    sys.add_promise(Promise::accept(
-        "furnace:draw",
-        "furnace",
-        AgentSet::single("bank"),
-        PowerUse {
-            voltage: 230,
-            watts: 2000,
+    // Independent safety net: grouped `BudgetBy` verifies bank's total grants <= 1600W
+    // and `AgreementBy` verifies site-wide 230V agreement C(b).
+    let view = ResolutionView::new(&partial_sys, &partial);
+    view.check_budget(
+        |_, b| match b.overlap {
+            GridOverlap::Supplied { watts, .. } if b.promiser == "bank" => {
+                Some((b.promiser, watts))
+            }
+            _ => None,
         },
-    ));
-    sys.add_promise(Promise::accept(
-        "clinic:draw",
-        "clinic",
-        AgentSet::single("bank"),
-        PowerUse {
-            voltage: 230,
-            watts: 800,
-        },
-    ));
-    let overloaded = sys.resolve(blackout)?;
-    let furnace_bound = overloaded
-        .bindings
-        .iter()
-        .any(|b| b.use_id == "furnace:draw");
-    let deficit = ResolutionView::new(&sys, &overloaded)
-        .check_valency("bank:backup", 1500_u32, |b| b.overlap.1)
-        .err()
-        .ok_or("expected ValencyDeficit on 1800W > 1500W overdraw")?;
+        |_| 1600_u32,
+    )?;
+    view.check_agreement(|_, b| match b.overlap {
+        GridOverlap::Supplied { voltage, .. } => Some(("site-bus", voltage)),
+        GridOverlap::Requested { .. } => None,
+    })?;
 
-    // Voluntary load shedding: clinic withdraws from `bank:backup`, restoring valency
-    // (guaranteed safe by Lean theorem `valency_withdrawal_safe`).
-    let shed =
-        sys.resolve(|obs, p| blackout(obs, p) && !(*obs == "clinic" && *p == "bank:backup"))?;
-    ResolutionView::new(&sys, &shed).check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;
+    // Mode B: Strict all-or-nothing clinic (`min_watts = 800`):
+    // - With hospital active, clinic's 600W grant < 800W -> rejected -> local diesel activates!
+    // - With hospital offline, bank offers clinic the full 800W -> clinic binds & diesel stays idle!
+    let strict_sys = build_microgrid(800)?;
+    let strict_shared = strict_sys.resolve(blackout)?;
+    let strict_solo =
+        strict_sys.resolve(|obs, p| blackout(obs, p) && !(*obs == "bank" && *p == "hosp:req"))?;
 
-    // Semantic Spacetime γ(3,4) reverse light cone & superagent directory.
-    let sst = project_sst(&sys);
-    let cone = sst.reverse_causal_cone(&SstNode::Promise("bank:backup"));
-    let dir = directory_of(&sys, &"bank");
+    let sst = project_sst(&partial_sys);
+    let cone = sst.reverse_causal_cone(&SstNode::Promise("clinic:req_aux"));
+    let dir = directory_of(&partial_sys, &"bank");
 
     println!(
-        "Healthy:  backup_active={}, pierce_blocked={}",
-        healthy.quenched.contains("bank:backup"),
-        !healthy_pierced,
+        "Partial outage (2/3 cells = 1600W): hosp={:?}, clinic={:?}, aux_residual={:?}, pierce_blocked={pierce_blocked}",
+        partial.offer("bank:grant_hosp"),
+        partial.offer("bank:grant_clinic"),
+        partial.offer("clinic:req_aux"),
     );
     println!(
-        "Outage:   backup_active={}, audit_active={}, pierce_blocked={}, J^-(backup)={} nodes, bank dir={} interior/{} surface",
-        outage.quenched.contains("bank:backup"),
-        outage.quenched.contains("bank:audit"),
-        !outage_pierced,
+        "Strict clinic (min 800W): shared(600W)->diesel={}, solo(800W)->diesel={}",
+        strict_shared.is_quenched("clinic:diesel"),
+        strict_solo.is_quenched("clinic:diesel"),
+    );
+    println!(
+        "Spacetime & Superagent: J^-(clinic:req_aux)={} nodes, bank dir={} interior/{} surface",
         cone.len(),
         dir.interior_promises.len(),
         dir.surface_promises.len(),
-    );
-    println!(
-        "Overdraw: 2000W furnace bound={furnace_bound}; {deficit} -> shed clinic -> 1000W <= 1500W OK"
     );
     Ok(())
 }

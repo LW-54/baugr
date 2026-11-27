@@ -1,4 +1,5 @@
-//! Autonomy-grounded conditional promise formulas (`+b | C` and `-b | C`).
+//! Autonomy-grounded conditional promise formulas (`+b | C`, `-b | C`) and
+//! value-derivation observation selectors (`+f(obs) | C`, `-f(obs) | C`).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -15,16 +16,17 @@ use alloc::vec::Vec;
 pub enum Cond<P> {
     /// Self-quenching: another promise `q` by the *same* promiser is quenched and locally kept.
     SelfPromise(P),
-    /// Assisted quenching: promiser's own `Use` promise `use_id` is bound to at least
-    /// `min_providers` quenched offers assessed as kept by this promiser.
+    /// Assisted quenching: promiser's own `Use` promise `use_id` is quenched, locally kept,
+    /// and bound to at least `min_providers` quenched offers assessed kept by this promiser.
     Assisted {
         /// Identifier of the promiser's own `Use` (`-c`) promise.
         use_id: P,
         /// Minimum number of kept upstream offers required.
         min_providers: usize,
     },
-    /// Tenancy / acceptance trigger: promiser's own `Offer` promise `offer_id` is accepted
-    /// by at least `min_acceptors` quenched `Use` promises visible in scope and assessed kept.
+    /// Tenancy / acceptance trigger: promiser's own `Offer` promise `offer_id` is quenched,
+    /// locally kept, and accepted by at least `min_acceptors` quenched `Use` promises visible
+    /// in scope and assessed kept by this promiser.
     Accepted {
         /// Identifier of the promiser's own `Offer` (`+R`) promise.
         offer_id: P,
@@ -119,5 +121,50 @@ impl<P> core::ops::Not for Cond<P> {
 
     fn not(self) -> Self::Output {
         Self::Not(Box::new(self))
+    }
+}
+
+/// Autonomy-grounded local observation selector for value-derived promises
+/// (`+f(obs) | C` and `-f(obs) | C`, `arXiv:1505.01716v1` §4.1).
+///
+/// Mirrors the exact four autonomy-grounded atoms of [`Cond`]. Every declared
+/// `Obs` entry establishes a strict stratum barrier (`rank(dep) < rank(p)`) and
+/// emits a causal `+LeadsTo` edge in Semantic Spacetime γ(3,4), guaranteeing
+/// all four universal Lean 4 laws hold for value-computed promise bodies.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Obs<P> {
+    /// Observe the resolved body of another promise `q` by the *same* promiser.
+    SelfPromise(P),
+    /// Observe all kept offers and overlaps bound to promiser's own `Use` promise `use_id`.
+    Assisted(P),
+    /// Observe all visible kept acceptances and overlaps bound to promiser's own `Offer` promise `offer_id`.
+    Accepted(P),
+    /// Observe the resolved body of promise `q` made by a strict interior sub-agent.
+    Interior(P),
+}
+
+impl<P> Obs<P> {
+    /// Observes the resolved body of another promise `q` by the same promiser.
+    #[must_use]
+    pub const fn self_promise(q: P) -> Self {
+        Self::SelfPromise(q)
+    }
+
+    /// Observes kept upstream offers and overlaps bound to promiser's own `Use` promise.
+    #[must_use]
+    pub const fn assisted(use_id: P) -> Self {
+        Self::Assisted(use_id)
+    }
+
+    /// Observes visible kept acceptances and overlaps bound to promiser's own `Offer` promise.
+    #[must_use]
+    pub const fn accepted(offer_id: P) -> Self {
+        Self::Accepted(offer_id)
+    }
+
+    /// Observes the resolved body of strict interior sub-agent promise `q`.
+    #[must_use]
+    pub const fn interior(q: P) -> Self {
+        Self::Interior(q)
     }
 }

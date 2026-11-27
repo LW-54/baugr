@@ -2,8 +2,9 @@
   Baugr.Oracle.Main — Dev/CI Executable DRT Oracle (Cedar VGD)
   Reads compact CASE blocks from stdin, evaluates them using the EXACT Lean 4
   specification (`evalStratified`, `activeBindings`, `projectSst`) with a bitmask
-  mutual-information BodyAlgebra (`b₁ ∩ b₂ = (o &&& u) ≠ 0`), and emits canonical
-  sorted results to stdout for bit-for-bit Rust ↔ Lean differential testing.
+  mutual-information BodyAlgebra (`b₁ ∩ b₂ = (o &&& u) ≠ 0`) and value-derived
+  conditional promises (`+f(obs) | C`), and emits canonical sorted results to stdout
+  for bit-for-bit Rust ↔ Lean differential testing.
 -/
 import Baugr
 
@@ -16,6 +17,19 @@ def bitmaskAlgebra : BodyAlgebra Nat Nat Nat :=
   { overlap := fun o u =>
       let m := o &&& u
       if m == 0 then none else some m }
+
+/-- Deterministic non-trivial value-derivation function over all 4 `LocalObs` kinds
+    (uses XOR + OR so value changes and non-monotonicity are thoroughly exercised). -/
+def deriveBitmask (seed : Nat) (obs : LocalObs Nat Nat Nat Nat Nat) : Option Nat :=
+  let bodyVal : Body Nat Nat → Nat
+    | .offer v => v
+    | .use   v => v
+  let acc1 := obs.selfBodies.foldl (fun a (_, b) => a ||| bodyVal b) seed
+  let acc2 := obs.assistedOffers.foldl (fun a (_, _, _, ob, m) => (a ^^^ ob) ||| m) acc1
+  let acc3 := obs.acceptedUses.foldl (fun a (_, _, _, ub, m) => (a ^^^ ub) ||| m) acc2
+  let acc4 := obs.interiorBodies.foldl (fun a (_, _, b) => a ||| bodyVal b) acc3
+  let out := acc4 &&& 7
+  if out == 0 then none else some out
 
 private def parseNat (s : String) : Nat :=
   s.toNat?.getD 0
@@ -53,11 +67,28 @@ private def parseCondTokens : Nat → List String → Cond Nat × List String
           (Cond.atLeast (parseNat k) cs, rem)
       | rest => (Cond.always, rest)
 
+/-- Parses `n` `Obs` entries `(S q | A u | C o | I q)` returning `(obsList, remainingTokens)`. -/
+private def parseObsTokens : Nat → List String → List (Obs Nat) × List String
+  | 0,     rest => ([], rest)
+  | n + 1, "S" :: q :: rest =>
+      let (os, rem) := parseObsTokens n rest
+      (.selfPromise (parseNat q) :: os, rem)
+  | n + 1, "A" :: u :: rest =>
+      let (os, rem) := parseObsTokens n rest
+      (.assisted (parseNat u) :: os, rem)
+  | n + 1, "C" :: o :: rest =>
+      let (os, rem) := parseObsTokens n rest
+      (.accepted (parseNat o) :: os, rem)
+  | n + 1, "I" :: q :: rest =>
+      let (os, rem) := parseObsTokens n rest
+      (.interior (parseNat q) :: os, rem)
+  | _,     rest => ([], rest)
+
 private structure RawCase where
   numAgents  : Nat := 0
   parents    : List (Nat × Nat) := []
   opaques    : List Nat := []
-  promises   : List (Promise Nat Nat Nat Nat) := []
+  promises   : List (Promise Nat Nat Nat Nat Nat) := []
   broken     : List (Nat × Nat) := []
   strata     : List (Nat × Nat) := []
   maxStratum : Nat := 0
@@ -69,13 +100,6 @@ private def insertSortedStr (x : String) : List String → List String
 
 private def dedupSortStr (xs : List String) : List String :=
   xs.foldl (fun acc x => insertSortedStr x acc) []
-
-private def insertSortedNat (x : Nat) : List Nat → List Nat
-  | []      => [x]
-  | y :: ys => if x == y then y :: ys else if x < y then x :: y :: ys else y :: insertSortedNat x ys
-
-private def dedupSortNat (xs : List Nat) : List Nat :=
-  xs.foldl (fun acc x => insertSortedNat x acc) []
 
 private def fmtNode : SstNode Nat Nat → String
   | .agent   a => s!"t:{a}"
@@ -110,26 +134,27 @@ private def evalCase (caseIdx : Nat) (rc : RawCase) : Except String String :=
   else if rc.steps < sys.promises.length + 1 then
     Except.error s!"case {caseIdx}: steps {rc.steps} < |promises| + 1 ({sys.promises.length + 1})!"
   else
-    let qFun := evalStratified sys α rank rc.steps rc.maxStratum
-    let quenched := dedupSortNat ((sys.promises.filter (fun pr => qFun pr.id)).map (fun pr => pr.id))
-    let bindingsRaw := activeBindings sys α qFun
+    let state := evalStratified sys α rank rc.steps rc.maxStratum
+    let bodiesFmt := dedupSortStr (sys.promises.filterMap fun pr =>
+      match state pr.id with
+      | some (.offer v) => some s!"{pr.id}:O:{v}"
+      | some (.use   v) => some s!"{pr.id}:U:{v}"
+      | none            => none)
+    let bindingsRaw := activeBindings sys α state
     let bindingsFmt := dedupSortStr (bindingsRaw.filterMap fun (oid, uid) =>
       match sys.find? oid, sys.find? uid with
       | some po, some pu =>
-          match po.body, pu.body with
-          | .offer ob, .use ub =>
-              match bitmaskAlgebra.overlap ob ub with
-              | some ov => some s!"{oid}:{uid}:{ov}"
-              | none    => none
-          | _, _ => none
+          match runtimeOverlap sys state po pu with
+          | some ov => some s!"{oid}:{uid}:{ov}"
+          | none    => none
       | _, _ => none)
     let sst := projectSst sys
     let sstFmt := dedupSortStr (sst.edges.map fun e =>
       s!"{fmtNode e.src}->{fmtLink e.kind}->{fmtNode e.dst}")
-    let qLine := String.intercalate " " (quenched.map toString)
+    let qLine := String.intercalate " " bodiesFmt
     let bLine := String.intercalate " " bindingsFmt
     let sLine := String.intercalate " " sstFmt
-    Except.ok s!"QUENCHED {qLine}\nBINDINGS {bLine}\nSST {sLine}\nEND_OUT\n"
+    Except.ok s!"BODIES {qLine}\nBINDINGS {bLine}\nSST {sLine}\nEND_OUT\n"
 
 private def processLines (lines : List String) : Except String String :=
   let rec go (idx : Nat) (cur : RawCase) (out : String) : List String → Except String String
@@ -161,14 +186,29 @@ private def processLines (lines : List String) : Except String String :=
               go idx { cur with steps := parseNat s } out rest
           | "PROMISE" :: idS :: promS :: polS :: tgtS :: scS :: bodyS :: condToks =>
               let bVal := parseNat bodyS
-              let body := if polS == "O" then Body.offer bVal else Body.use bVal
+              let spec := if polS == "O" then BodySpec.fixedOffer bVal else BodySpec.fixedUse bVal
               let (cond, _) := parseCondTokens (condToks.length + 1) condToks
-              let pr : Promise Nat Nat Nat Nat :=
+              let pr : Promise Nat Nat Nat Nat Nat :=
                 { id       := parseNat idS
                   promiser := parseNat promS
                   target   := parseAgentSet tgtS
                   scope    := parseAgentSet scS
-                  body     := body
+                  spec     := spec
+                  cond     := cond }
+              go idx { cur with promises := pr :: cur.promises } out rest
+          | "DERIVED" :: idS :: promS :: polS :: tgtS :: scS :: seedS :: obsCountS :: tailToks =>
+              let seed := parseNat seedS
+              let (obs, condToks) := parseObsTokens (parseNat obsCountS) tailToks
+              let spec :=
+                if polS == "O" then BodySpec.derivedOffer obs (deriveBitmask seed)
+                else BodySpec.derivedUse obs (deriveBitmask seed)
+              let (cond, _) := parseCondTokens (condToks.length + 1) condToks
+              let pr : Promise Nat Nat Nat Nat Nat :=
+                { id       := parseNat idS
+                  promiser := parseNat promS
+                  target   := parseAgentSet tgtS
+                  scope    := parseAgentSet scS
+                  spec     := spec
                   cond     := cond }
               go idx { cur with promises := pr :: cur.promises } out rest
           | _ => go idx cur out rest

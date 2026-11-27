@@ -1,23 +1,28 @@
-//! Kosaraju SCC stratification and observer-local stratified fixed-point quenching.
+//! Kosaraju SCC stratification and observer-local stratified fixed-point quenching
+//! over full value-carrying promise states `P -> Option<Body<O, U>>`.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::cond::Cond;
+use super::cond::{Cond, Obs};
 use super::system::{CompatIndex, PromiseSystem};
-use super::{Binding, Body, BodyAlgebra, EvalError, Resolved};
+use super::{
+    Binding, Body, BodyAlgebra, BodySpec, DeriveAlgebra, EvalError, LocalView, ObservedOffer,
+    ObservedUse, Promise, Resolved,
+};
 
-impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
+impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R> {
     /// Computes a minimal valid stratification rank per promise via Kosaraju SCC decomposition.
     ///
-    /// Positive dependencies satisfy `rank(dep) <= rank(p)`; negated dependencies satisfy
-    /// `rank(dep) < rank(p)`. By Lean 4 theorem `stratification_independent` (Apt–Blair–Walker),
-    /// any valid stratification yields the exact same resolved fixed point.
+    /// Positive `Cond` dependencies satisfy `rank(dep) <= rank(p)`; negated `Cond`
+    /// dependencies and all value-derivation `Obs` dependencies satisfy `rank(dep) < rank(p)`.
+    /// By Lean 4 theorem `stratification_independent` (Apt–Blair–Walker), any valid
+    /// stratification yields the exact same resolved value state.
     ///
     /// # Errors
-    /// Returns [`EvalError::UnstratifiableNegativeCycle`] if any strongly connected component
-    /// contains a negated dependency edge.
+    /// Returns [`EvalError::UnstratifiableCycle`] if any strongly connected component
+    /// contains a negated condition edge or value-derivation `Obs` edge.
     pub fn stratify(&self) -> Result<BTreeMap<P, usize>, EvalError<P>> {
         let compat = self.build_compat_index();
         self.stratify_with(&compat)
@@ -30,7 +35,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
         let mut deps: BTreeMap<P, Vec<(P, bool)>> = BTreeMap::new();
         for (pid, pr) in &self.promises {
             let mut d = Vec::new();
-            compat.cond_deps(false, &pr.cond, &mut d);
+            compat.promise_deps(&pr.cond, pr.obs(), &mut d);
             deps.insert(pid.clone(), d);
         }
 
@@ -71,13 +76,13 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
             let Some(&cp) = comp_of.get(p) else {
                 continue;
             };
-            for (d, is_neg) in ds {
-                if *is_neg
+            for (d, is_strict) in ds {
+                if *is_strict
                     && let Some(&cd) = comp_of.get(d)
                     && cp == cd
                     && let Some(scc) = comps.get(cp)
                 {
-                    return Err(EvalError::UnstratifiableNegativeCycle(scc.clone()));
+                    return Err(EvalError::UnstratifiableCycle(scc.clone()));
                 }
             }
         }
@@ -87,12 +92,12 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
             let mut r = 0usize;
             for p in members {
                 if let Some(ds) = deps.get(p) {
-                    for (d, is_neg) in ds {
+                    for (d, is_strict) in ds {
                         if let Some(&cd) = comp_of.get(d)
                             && cd != cid
                             && let Some(&prev_rank) = comp_rank.get(cd)
                         {
-                            let need = if *is_neg {
+                            let need = if *is_strict {
                                 prev_rank.saturating_add(1)
                             } else {
                                 prev_rank
@@ -117,11 +122,23 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
         Ok(strata)
     }
 
+    fn runtime_overlap(
+        &self,
+        bodies: &BTreeMap<P, Body<D::Offer, D::Use>>,
+        offer_id: &P,
+        use_id: &P,
+    ) -> Option<D::Overlap> {
+        match (bodies.get(offer_id), bodies.get(use_id)) {
+            (Some(Body::Offer(ob)), Some(Body::Use(ub))) => self.algebra.overlap(ob, ub),
+            _ => None,
+        }
+    }
+
     fn eval_cond<F>(
         &self,
         compat: &CompatIndex<P>,
         alpha: &F,
-        qset: &BTreeSet<P>,
+        bodies: &BTreeMap<P, Body<D::Offer, D::Use>>,
         me: &A,
         cond: &Cond<P>,
     ) -> bool
@@ -132,10 +149,10 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
             Cond::SelfPromise(q) => self
                 .promises
                 .get(q)
-                .is_some_and(|pq| &pq.promiser == me && qset.contains(q) && alpha(me, q)),
+                .is_some_and(|pq| &pq.promiser == me && bodies.contains_key(q) && alpha(me, q)),
             Cond::Interior(q) => self.promises.get(q).is_some_and(|pq| {
                 self.hierarchy.is_strict_ancestor(me, &pq.promiser)
-                    && qset.contains(q)
+                    && bodies.contains_key(q)
                     && alpha(me, q)
             }),
             Cond::Assisted {
@@ -145,13 +162,19 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
                 let Some(pu) = self.promises.get(use_id) else {
                     return false;
                 };
-                if &pu.promiser != me || !pu.is_use() || !qset.contains(use_id) {
+                if &pu.promiser != me
+                    || !pu.is_use()
+                    || !bodies.contains_key(use_id)
+                    || !alpha(me, use_id)
+                {
                     return false;
                 }
                 let n = compat.offers_for_use.get(use_id).map_or(0, |offers| {
                     offers
                         .iter()
-                        .filter(|oid| qset.contains(*oid) && alpha(me, oid))
+                        .filter(|oid| {
+                            self.runtime_overlap(bodies, oid, use_id).is_some() && alpha(me, oid)
+                        })
                         .count()
                 });
                 n >= *min_providers
@@ -163,7 +186,11 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
                 let Some(po) = self.promises.get(offer_id) else {
                     return false;
                 };
-                if &po.promiser != me || !po.is_offer() || !qset.contains(offer_id) {
+                if &po.promiser != me
+                    || !po.is_offer()
+                    || !bodies.contains_key(offer_id)
+                    || !alpha(me, offer_id)
+                {
                     return false;
                 }
                 let n = compat
@@ -171,34 +198,164 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
                     .get(offer_id)
                     .map_or(0, |uses| {
                         uses.iter()
-                            .filter(|uid| qset.contains(*uid) && alpha(me, uid))
+                            .filter(|uid| {
+                                self.runtime_overlap(bodies, offer_id, uid).is_some()
+                                    && alpha(me, uid)
+                            })
                             .count()
                     });
                 n >= *min_acceptors
             }
             Cond::AtLeast(k, cs) => {
                 cs.iter()
-                    .filter(|c| self.eval_cond(compat, alpha, qset, me, c))
+                    .filter(|c| self.eval_cond(compat, alpha, bodies, me, c))
                     .count()
                     >= *k
             }
-            Cond::Not(c) => !self.eval_cond(compat, alpha, qset, me, c),
+            Cond::Not(c) => !self.eval_cond(compat, alpha, bodies, me, c),
         }
     }
 
-    /// Resolves quenched promises and active bindings under observer-local assessment
-    /// `alpha(observer, promise_id)` (`ADR-0018` A3; `arXiv:2606.08552v1` L1070).
+    fn build_local_view<'a, F>(
+        &'a self,
+        compat: &CompatIndex<P>,
+        alpha: &F,
+        bodies: &'a BTreeMap<P, Body<D::Offer, D::Use>>,
+        me: &A,
+        obs: &'a [Obs<P>],
+    ) -> LocalView<'a, A, P, D>
+    where
+        F: Fn(&A, &P) -> bool,
+    {
+        let mut self_bodies = Vec::new();
+        let mut assisted_offers = Vec::new();
+        let mut accepted_uses = Vec::new();
+        let mut interior_bodies = Vec::new();
+
+        for o in obs {
+            match o {
+                Obs::SelfPromise(q) => {
+                    if let (Some(pq), Some(b)) = (self.promises.get(q), bodies.get(q))
+                        && &pq.promiser == me
+                        && alpha(me, q)
+                    {
+                        self_bodies.push((&pq.id, b));
+                    }
+                }
+                Obs::Assisted(use_id) => {
+                    if let (Some(pu), Some(Body::Use(ub))) =
+                        (self.promises.get(use_id), bodies.get(use_id))
+                        && &pu.promiser == me
+                        && pu.is_use()
+                        && alpha(me, use_id)
+                        && let Some(offers) = compat.offers_for_use.get(use_id)
+                    {
+                        for oid in offers {
+                            if alpha(me, oid)
+                                && let (Some(po), Some(Body::Offer(ob))) =
+                                    (self.promises.get(oid), bodies.get(oid))
+                                && let Some(ov) = self.algebra.overlap(ob, ub)
+                            {
+                                assisted_offers.push(ObservedOffer {
+                                    use_id: &pu.id,
+                                    offer_id: &po.id,
+                                    promiser: &po.promiser,
+                                    offer: ob,
+                                    overlap: ov,
+                                });
+                            }
+                        }
+                    }
+                }
+                Obs::Accepted(offer_id) => {
+                    if let (Some(po), Some(Body::Offer(ob))) =
+                        (self.promises.get(offer_id), bodies.get(offer_id))
+                        && &po.promiser == me
+                        && po.is_offer()
+                        && alpha(me, offer_id)
+                        && let Some(uses) = compat.visible_uses_for_offer.get(offer_id)
+                    {
+                        for uid in uses {
+                            if alpha(me, uid)
+                                && let (Some(pu), Some(Body::Use(ub))) =
+                                    (self.promises.get(uid), bodies.get(uid))
+                                && let Some(ov) = self.algebra.overlap(ob, ub)
+                            {
+                                accepted_uses.push(ObservedUse {
+                                    offer_id: &po.id,
+                                    use_id: &pu.id,
+                                    consumer: &pu.promiser,
+                                    use_body: ub,
+                                    overlap: ov,
+                                });
+                            }
+                        }
+                    }
+                }
+                Obs::Interior(q) => {
+                    if let (Some(pq), Some(b)) = (self.promises.get(q), bodies.get(q))
+                        && self.hierarchy.is_strict_ancestor(me, &pq.promiser)
+                        && alpha(me, q)
+                    {
+                        interior_bodies.push((&pq.id, &pq.promiser, b));
+                    }
+                }
+            }
+        }
+
+        LocalView {
+            self_bodies,
+            assisted_offers,
+            accepted_uses,
+            interior_bodies,
+        }
+    }
+}
+
+impl<A, P, D, R> PromiseSystem<A, P, D, R>
+where
+    A: Ord + Clone,
+    P: Ord + Clone,
+    D: DeriveAlgebra<A, P, R>,
+    D::Offer: Clone + PartialEq,
+    D::Use: Clone + PartialEq,
+{
+    fn eval_rule<F>(
+        &self,
+        compat: &CompatIndex<P>,
+        alpha: &F,
+        bodies: &BTreeMap<P, Body<D::Offer, D::Use>>,
+        pr: &Promise<A, P, D::Offer, D::Use, R>,
+    ) -> Option<Body<D::Offer, D::Use>>
+    where
+        F: Fn(&A, &P) -> bool,
+    {
+        match &pr.spec {
+            BodySpec::Fixed(b) => Some(b.clone()),
+            BodySpec::DerivedOffer { obs, rule } => {
+                let view = self.build_local_view(compat, alpha, bodies, &pr.promiser, obs);
+                self.algebra.derive_offer(rule, &view).map(Body::Offer)
+            }
+            BodySpec::DerivedUse { obs, rule } => {
+                let view = self.build_local_view(compat, alpha, bodies, &pr.promiser, obs);
+                self.algebra.derive_use(rule, &view).map(Body::Use)
+            }
+        }
+    }
+
+    /// Resolves quenched promise bodies and active bindings under observer-local
+    /// assessment `alpha(observer, promise_id)` (`ADR-0018` A3; `arXiv:2606.08552v1` L1070).
     ///
     /// # Errors
-    /// Returns [`EvalError::UnstratifiableNegativeCycle`] if the system cannot be stratified.
-    pub fn resolve<F>(&self, alpha: F) -> Result<Resolved<A, P, D::Overlap>, EvalError<P>>
+    /// Returns [`EvalError::UnstratifiableCycle`] if the system cannot be stratified.
+    pub fn resolve<F>(&self, alpha: F) -> Result<Resolved<A, P, D>, EvalError<P>>
     where
         F: Fn(&A, &P) -> bool,
     {
         let compat = self.build_compat_index();
         let strata = self.stratify_with(&compat)?;
         let max_s = strata.values().copied().max().unwrap_or(0);
-        let mut quenched: BTreeSet<P> = BTreeSet::new();
+        let mut bodies: BTreeMap<P, Body<D::Offer, D::Use>> = BTreeMap::new();
 
         for s in 0..=max_s {
             let cur_ids: Vec<P> = strata
@@ -206,46 +363,57 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
                 .filter(|(_, r)| **r == s)
                 .map(|(p, _)| p.clone())
                 .collect();
+
+            // Pre-evaluate every promise's rule once on the frozen lower strata `< s`.
+            let mut candidates: BTreeMap<P, Body<D::Offer, D::Use>> = BTreeMap::new();
+            for pid in &cur_ids {
+                if let Some(pr) = self.promises.get(pid)
+                    && let Some(body) = self.eval_rule(&compat, &alpha, &bodies, pr)
+                {
+                    candidates.insert(pid.clone(), body);
+                }
+            }
+
             loop {
-                let mut next = quenched.clone();
+                let mut next = bodies.clone();
                 for pid in &cur_ids {
                     if let Some(pr) = self.promises.get(pid) {
-                        if self.eval_cond(&compat, &alpha, &quenched, &pr.promiser, &pr.cond) {
-                            next.insert(pid.clone());
+                        if self.eval_cond(&compat, &alpha, &bodies, &pr.promiser, &pr.cond)
+                            && let Some(body) = candidates.get(pid)
+                        {
+                            next.insert(pid.clone(), body.clone());
                         } else {
                             next.remove(pid);
                         }
                     }
                 }
-                if next == quenched {
+                if next == bodies {
                     break;
                 }
-                quenched = next;
+                bodies = next;
             }
         }
 
         let mut bindings = Vec::new();
         for po in self.promises.values() {
-            let Body::Offer(ob) = &po.body else {
-                continue;
-            };
-            if !quenched.contains(&po.id) {
+            if !po.is_offer() {
                 continue;
             }
+            let Some(Body::Offer(ob)) = bodies.get(&po.id) else {
+                continue;
+            };
             let Some(use_ids) = compat.uses_for_offer.get(&po.id) else {
                 continue;
             };
             for uid in use_ids {
-                if !quenched.contains(uid) {
+                let Some(Body::Use(ub)) = bodies.get(uid) else {
                     continue;
-                }
+                };
                 let Some(pu) = self.promises.get(uid) else {
                     continue;
                 };
-                let Body::Use(ub) = &pu.body else {
-                    continue;
-                };
                 if alpha(&pu.promiser, &po.id)
+                    && alpha(&pu.promiser, &pu.id)
                     && let Some(ov) = self.algebra.overlap(ob, ub)
                 {
                     bindings.push(Binding {
@@ -260,7 +428,7 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
         }
 
         Ok(Resolved {
-            quenched,
+            bodies,
             bindings,
             strata,
         })
@@ -269,8 +437,8 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D> {
     /// Static compile-time resolution under uniform optimistic assessment `α ≡ true`.
     ///
     /// # Errors
-    /// Returns [`EvalError::UnstratifiableNegativeCycle`] if the system cannot be stratified.
-    pub fn resolve_optimistic(&self) -> Result<Resolved<A, P, D::Overlap>, EvalError<P>> {
+    /// Returns [`EvalError::UnstratifiableCycle`] if the system cannot be stratified.
+    pub fn resolve_optimistic(&self) -> Result<Resolved<A, P, D>, EvalError<P>> {
         self.resolve(|_, _| true)
     }
 }
