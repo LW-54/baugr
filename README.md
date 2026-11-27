@@ -38,7 +38,7 @@ Derived directly from the primary mathematical papers of Jan Bergstra and Mark B
 
 ## Documentation, Paper & Examples
 
-- **Conceptual & Mathematical Paper**: [`paper/baugr.typ`](paper/baugr.typ) — compiles hermetically offline via `nix build .#paper` (or `just paper`) to a 13-page PDF presenting the problem of voluntary coordination, running microgrid and consensus examples, the Promise Theory + $\gamma(3,4)$ algebra, the Four Universal Laws, comparative landscape, a practical usage guide with worked math-to-Rust translation, and verified realization.
+- **Conceptual & Mathematical Paper**: [`paper/baugr.typ`](paper/baugr.typ) — compiles hermetically offline via `nix build .#paper` (or `just paper`) to a 14-page PDF presenting the problem of voluntary coordination, running microgrid and consensus examples, the Promise Theory + $\gamma(3,4)$ algebra, the Four Universal Laws, comparative landscape, a practical usage guide with worked opaque-superagent showcase, and verified realization.
 - **API Reference & Executable Doctests**: `cargo doc --no-deps --open` and `cargo test --doc`.
 - **Standalone Runnable Examples**:
   - `cargo run --example microgrid` — stratified failover, split blackout, and wattage valency

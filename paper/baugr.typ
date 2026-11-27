@@ -602,13 +602,12 @@ We now state the four universal laws guaranteed for *every* Promise System expre
 @tab-theorems lists all *29 audited theorems* verified in pure Lean 4 (`lean4` 4.35.0, zero `Mathlib`, `0` warnings, `0 sorryAx`). Every theorem depends strictly on Lean's standard logical foundations (`propext`, `Quot.sound`, and where classical decidability enters, `Classical.choice`).
 
 #figure(
-  placement: top,
   {
-    set text(size: 8.0pt)
-    show raw: text.with(size: 7.2pt)
+    set text(size: 7.9pt)
+    show raw: text.with(size: 7.1pt)
     table(
       columns: (auto, 1.60fr, 1.82fr, auto),
-      inset: 3.8pt,
+      inset: 3.5pt,
       align: left,
       stroke: (x: none, y: 0.4pt + luma(200)),
       fill: (_, row) => if row == 0 { softbg } else { none },
@@ -648,7 +647,6 @@ We now state the four universal laws guaranteed for *every* Promise System expre
 Does anything like Baugr already exist? To answer accurately, we surveyed five neighboring ecosystems: existing Promise Theory / SST implementations, Assume–Guarantee contract frameworks, Stratified Datalog and Answer Set Programming engines, relational/temporal model checkers, and categorical graph libraries. @tab-compare summarizes the landscape honestly, including where each neighboring tool strictly outperforms Baugr.
 
 #figure(
-  placement: top,
   {
     set text(size: 7.7pt)
     table(
@@ -700,64 +698,94 @@ How does an engineer turn an informal architecture into a formally checked Baugr
 
 == The Five-Step Practitioner Workflow
 
-+ *Define your domain compatibility as native code (`BodyAlgebra`).* Decide what an offer looks like ($O$), what an acceptance looks like ($U$), and what shared commitment ($M$) emerges when they match. Use symmetric types ($O = U = M$) when offers and uses share one vocabulary (`SymmetricMeet`), or asymmetric structs when offers describe capacities/ranges and uses describe demands/constraints.
-+ *Declare agents, superagent walls, and voluntary promises.* Register containment edges (`contain(superagent, child)`), mark encapsulated subsystems opaque (`set_opaque(superagent, true)`), and attach each agent's offers (`+o`), acceptances (`-u`), and conditions (`SelfPromise`, `Assisted`, `Accepted`, `Interior`, `AtLeast`, `!`).
++ *Define your domain compatibility as native code (`BodyAlgebra`).* Decide what an offer looks like ($O$), what an acceptance looks like ($U$), and what non-empty shared commitment ($M$) emerges when they match (`fn overlap(&self, o: &O, u: &U) -> Option<Self::Overlap>`). Much like Rust's `Iterator::Item` / `Option<Self::Item>`, keeping `Option` on the method return lets Baugr's engine distinguish compatible from incompatible pairs while guaranteeing every active `Binding` carries a plain, non-empty `M` without unwrapping. Use symmetric types ($O = U = M$) via `SymmetricMeet`, or asymmetric structs when offers state capacities/ranges and uses state demands/constraints.
++ *Declare agents, superagent walls, and voluntary promises.* Register superagents (`add_superagent(name, opaque)`) and containment edges (`contain(superagent, child)`), then attach offers (`+o`), acceptances (`-u`), explicit visibility scopes (`.with_scope(...)`), and conditions (`SelfPromise`, `Assisted`, `Accepted`, `Interior`, `AtLeast`, `!`).
 + *Run static diagnostics before evaluating anything (`lint()`).* Catch modeling bugs—typos in promise IDs, referencing another agent's promise inside `SelfPromise`, checking `Assisted` on an offer instead of a use, pointing `Interior` outside a superagent's children, or leaving a target blind to an assisting dependency's scope—before simulation or deployment.
-+ *Evaluate observer-local scenarios and query causal geometry.* Call `resolve_optimistic()` to verify the healthy steady state, then pass arbitrary observer-local assessment closures `resolve(|observer, promise| ...)` to test partial blackouts, network partitions, or Byzantine views. Project the system via `project_sst(&sys)` and query `forward_causal_cone()` ($J^+$) for exact *blast radius* ("what can break if this promise fails?") and `reverse_causal_cone()` ($J^-$) for exact *causal ancestry* ("what could possibly have caused this failure?").
++ *Evaluate observer-local scenarios and query causal geometry.* Call `resolve_optimistic()` to verify the healthy steady state, then pass arbitrary observer-local assessment closures `resolve(|observer, promise| ...)` to test partial blackouts, network partitions, or Byzantine views. Project the system via `project_sst(&sys)` to query `forward_causal_cone()` ($J^+$, *blast radius*) and `reverse_causal_cone()` ($J^-$, *causal ancestry*), and call `directory_of(&sys, &superagent)` to inspect interior vs. surface promises.
 + *Enforce collective capacity and coordination laws.* Wrap the resolved state in `ResolutionView` and assert domain invariants—finite capacity budgets (`check_valency`), unique slots across a fleet (`check_disjoint`), peer consensus $C(b)$ (`check_agreement`), quorums (`QuorumLaw`), or custom `ScopeLaw` implementations.
 
-== Worked Translation: Microgrid Failover from Math to Executable Code
+== Worked Showcase: Microgrid with an Opaque 2-of-3 Battery Bank Superagent
 
-Consider the four-promise Hospital Microgrid core from §2.1. In Burgess's compact arrow notation (with universal target $*$ and condition bar $|$), the system is:
-$ "grid" arrow.r^(+(230"V", <= 5000"W")) *, quad "bat" arrow.r^(-(230"V", 0"W")) "grid", quad "bat" arrow.r^(+(230"V", <= 1500"W") | not "Assisted"("sense")) *, quad "hosp" arrow.r^(-(230"V", 1000"W")) \{"grid", "bat"\}. $
+Combining both running examples from §2 into one end-to-end system (`examples/microgrid.rs`), suppose the site's backup `bank` is an *opaque superagent* encapsulating three internal battery cells `{cell1, cell2, cell3}`. Its surface offer `+backup` quenches if and only if grid sensing fails *and* at least 2 of its 3 interior cells are healthy; a tenancy-style `+audit` offer activates once a consumer accepts `+backup`; and the `hospital` simultaneously draws 1000 W from `{grid, bank}` while attempting an unauthorized direct piercing connection to `cell1` (which Law II blocks mechanically):
 
-Its direct, line-for-line executable translation in Rust needs zero configuration files, zero macros, and zero runtime dependencies:
+$ "bank" arrow.r^(+C) \{"cell"_1, "cell"_2, "cell"_3\} quad ("opaque"), \
+  "bank" arrow.r^(+(230"V", 1500"W") | not "Assisted"("sense") and "AtLeast"(2, ["Interior"("chg"_1..3)])) *, \
+  "bank" arrow.r^(+"audit" | "Accepted"("backup")) *, quad "hosp" arrow.r^(-(230"V", 1000"W")) \{"grid", "bank"\}, quad "hosp" arrow.r^(-(230"V", 500"W")) "cell"_1. $
+
+Below is the direct, verified Rust realization exercising superagents, opaque boundaries, distinct target vs. visibility scope, emergent quorum + failover negation, `Accepted` tenancy, static `lint()`, observer-local blackout + internal fault absorption, `check_valency` + `check_agreement`, reverse light cones $J^-$, and `directory_of`:
 
 ```rust
 use baugr::{
     AgentSet, BodyAlgebra, Cond, Promise, PromiseSystem, ResolutionView, SstNode,
-    project_sst,
+    directory_of, project_sst,
 };
 
 struct PowerOffer { voltage: u16, max_watts: u32 }
 struct PowerUse   { voltage: u16, watts: u32 }
 struct GridAlgebra;
 impl BodyAlgebra for GridAlgebra {
-    type Offer = PowerOffer; type Use = PowerUse; type Overlap = u32;
-    fn overlap(&self, o: &PowerOffer, u: &PowerUse) -> Option<u32> {
-        (o.voltage == u.voltage && u.watts <= o.max_watts).then_some(u.watts)
+    type Offer = PowerOffer; type Use = PowerUse;
+    type Overlap = (u16, u32);                      // agreed (voltage, watts)
+    fn overlap(&self, o: &PowerOffer, u: &PowerUse) -> Option<Self::Overlap> {
+        if o.voltage != u.voltage { return None; }
+        (u.watts <= o.max_watts).then_some((o.voltage, u.watts))
     }
 }
 
 let mut sys = PromiseSystem::new(GridAlgebra);
+sys.add_superagent("bank", true);                   // opaque event horizon
+for (cell, pid) in [("cell1", "cell1:chg"), ("cell2", "cell2:chg"), ("cell3", "cell3:chg")] {
+    sys.contain("bank", cell)?;
+    sys.add_promise(Promise::offer(
+        pid, cell, AgentSet::All, PowerOffer { voltage: 230, max_watts: 800 },
+    ));
+}
 sys.add_promise(Promise::offer(
-    "grid:mains", "grid", AgentSet::All,
-    PowerOffer { voltage: 230, max_watts: 5000 },
-));
-sys.add_promise(Promise::accept(
-    "bat:sense", "battery", AgentSet::single("grid"),
-    PowerUse { voltage: 230, watts: 0 },
+    "grid:mains", "grid", AgentSet::All, PowerOffer { voltage: 230, max_watts: 5000 },
 ));
 sys.add_promise(
-    Promise::offer(
-        "bat:backup", "battery", AgentSet::All,
-        PowerOffer { voltage: 230, max_watts: 1500 },
+    Promise::accept(
+        "bank:sense", "bank", AgentSet::single("grid"), PowerUse { voltage: 230, watts: 0 },
     )
-    .when(!Cond::assisted("bat:sense")),           // stratified failover
+    .with_scope(AgentSet::All),                     // target={grid}, scope=All (complete info)
+);
+sys.add_promise(
+    Promise::offer(
+        "bank:backup", "bank", AgentSet::All, PowerOffer { voltage: 230, max_watts: 1500 },
+    )
+    .when(Cond::all(vec![
+        !Cond::assisted("bank:sense"),              // stratified failover negation
+        Cond::at_least(2, vec![                     // irreducible 2-of-3 emergence
+            Cond::interior("cell1:chg"),
+            Cond::interior("cell2:chg"),
+            Cond::interior("cell3:chg"),
+        ]),
+    ])),
+);
+sys.add_promise(
+    Promise::offer(
+        "bank:audit", "bank", AgentSet::All, PowerOffer { voltage: 230, max_watts: 0 },
+    )
+    .when(Cond::accepted("bank:backup")),           // fires only once a consumer binds
 );
 sys.add_promise(Promise::accept(
-    "hosp:draw", "hospital", AgentSet::of(["grid", "battery"]),
-    PowerUse { voltage: 230, watts: 1000 },
+    "hosp:draw", "hospital", AgentSet::of(["grid", "bank"]), PowerUse { voltage: 230, watts: 1000 },
 ));
+sys.add_promise(Promise::accept(
+    "hosp:pierce", "hospital", AgentSet::single("cell1"), PowerUse { voltage: 230, watts: 500 },
+));                                                 // piercing cell1 -> blocked by Law II
 
-assert!(sys.lint().is_empty());                    // 1. static diagnostics
-let healthy = sys.resolve_optimistic()?;           // 2. mains up -> backup idle
-assert!(!healthy.quenched.contains("bat:backup"));
-let outage = sys.resolve(|obs, p| !(*obs == "battery" && *p == "grid:mains"))?;
-ResolutionView::new(&sys, &outage)                 // 3. local blackout + valency
-    .check_valency("bat:backup", 1500_u32, |b| b.overlap)?;
-let cone = project_sst(&sys)                       // 4. exact reverse cone J^-
-    .reverse_causal_cone(&SstNode::Promise("hosp:draw"));
+assert!(sys.lint().is_empty());                     // 0 static warnings
+// Local blackout at `bank` + internal `cell1` crash -> 2-of-3 quorum absorbs failure:
+let outage = sys.resolve(|obs, p| !(*obs == "bank" && matches!(*p, "grid:mains" | "cell1:chg")))?;
+assert!(outage.quenched.contains("bank:backup") && outage.quenched.contains("bank:audit"));
+assert!(!outage.bindings.iter().any(|b| b.use_id == "hosp:pierce"));
+
+let view = ResolutionView::new(&sys, &outage);
+view.check_valency("bank:backup", 1500_u32, |b| b.overlap.1)?;   // 1000W <= 1500W budget
+view.check_agreement(|_, b| Some(("site-bus", b.overlap.0)))?;   // all bindings agree on 230V
+let cone = project_sst(&sys).reverse_causal_cone(&SstNode::Promise("bank:backup")); // 6 nodes
+let dir  = directory_of(&sys, &"bank");                          // 3 interior, 3 surface
 ```
 
 == Three Practical Deployment Patterns
