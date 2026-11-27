@@ -1,11 +1,9 @@
 import Baugr.Spacetime
 import Baugr.Promise
 import Baugr.Projection
-import Baugr.Law
 import Baugr.Thm.Spacetime
 import Baugr.Thm.Quenching
 import Baugr.Thm.Autonomy
 import Baugr.Thm.LightCone
 import Baugr.Thm.Stratification
 import Baugr.Thm.Superagent
-import Baugr.Thm.Law

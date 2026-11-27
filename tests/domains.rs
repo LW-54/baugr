@@ -1,28 +1,35 @@
-//! Domain-agnostic integration tests, value-derived conditional promise proofs,
-//! recursive opaque event-horizon tests, channel-sharp `may_overlap` tests,
-//! type-safe static upper-bound discharge tests, and L0 purity guards for `baugr` v0.4.
+//! Domain-agnostic integration tests, symmetric value-derived conditional promise
+//! proofs (`±f(obs) | C`), recursive opaque event-horizon tests, channel-sharp
+//! `may_overlap` tests, and L0 purity guards for `baugr` v0.4.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use baugr::{
-    AgentSet, AgreementConflict, Body, BodyAlgebra, BudgetDeficit, Cap, CardinalityViolation,
-    CoarseGrainError, Cond, ConditionWarning, DeriveAlgebra, EvalError, HierarchyError, LinkKind,
-    LocalView, NodeKind, Obs, Promise, PromiseSystem, ResolutionView, ResourceMonoid, SpecRef,
+    AgentSet, Body, BodyAlgebra, CoarseGrainError, Cond, ConditionWarning, DeriveAlgebra,
+    EvalError, HierarchyError, LinkKind, LocalView, NodeKind, Obs, Promise, PromiseSystem, SpecRef,
     SstError, SstGraph, SstNode, directory_of, project_sst,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PowerOffer {
-    voltage: u16,
-    max_watts: u32,
+enum PowerOffer {
+    Supply { voltage: u16, max_watts: u32 },
+    WithinLimit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PowerUse {
     voltage: u16,
     watts: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GridCheckRule {
+    CheckAcceptedBudget {
+        offer_id: &'static str,
+        max_watts: u32,
+    },
 }
 
 struct GridAlgebra;
@@ -32,20 +39,46 @@ impl BodyAlgebra for GridAlgebra {
     type Use = PowerUse;
     type Overlap = u32;
     fn overlap(&self, o: &PowerOffer, u: &PowerUse) -> Option<u32> {
-        if o.voltage != u.voltage {
+        let PowerOffer::Supply { voltage, max_watts } = o else {
+            return None;
+        };
+        if *voltage != u.voltage {
             return None;
         }
-        (u.watts <= o.max_watts).then_some(u.watts)
+        (u.watts <= *max_watts).then_some(u.watts)
     }
 }
 
-fn build_microgrid() -> PromiseSystem<&'static str, &'static str, GridAlgebra> {
-    let mut sys = PromiseSystem::new(GridAlgebra);
+impl DeriveAlgebra<&'static str, &'static str, GridCheckRule> for GridAlgebra {
+    fn may_overlap(
+        &self,
+        _offer: SpecRef<'_, PowerOffer, GridCheckRule>,
+        _use_: SpecRef<'_, PowerUse, GridCheckRule>,
+    ) -> bool {
+        false
+    }
+
+    fn derive_offer(
+        &self,
+        rule: &GridCheckRule,
+        obs: &LocalView<'_, &'static str, &'static str, Self>,
+    ) -> Option<PowerOffer> {
+        let GridCheckRule::CheckAcceptedBudget {
+            offer_id,
+            max_watts,
+        } = rule;
+        let used: u32 = obs.accepted(*offer_id).map(|e| e.overlap).sum();
+        (used <= *max_watts).then_some(PowerOffer::WithinLimit)
+    }
+}
+
+fn build_microgrid() -> PromiseSystem<&'static str, &'static str, GridAlgebra, GridCheckRule> {
+    let mut sys = PromiseSystem::with_rules(GridAlgebra);
     sys.add_promise(Promise::offer(
         "grid:mains",
         "grid",
         AgentSet::All,
-        PowerOffer {
+        PowerOffer::Supply {
             voltage: 230,
             max_watts: 5000,
         },
@@ -64,13 +97,24 @@ fn build_microgrid() -> PromiseSystem<&'static str, &'static str, GridAlgebra> {
             "bat:backup",
             "battery",
             AgentSet::All,
-            PowerOffer {
+            PowerOffer::Supply {
                 voltage: 230,
                 max_watts: 1500,
             },
         )
         .when(!Cond::assisted("bat:sense_grid")),
     );
+    // Passive capacity monitor expressed natively in Stratum 1 via `+f(obs)` (no external law!):
+    sys.add_promise(Promise::derive_offer(
+        "bat:within_limit",
+        "battery",
+        AgentSet::All,
+        [Obs::accepted("bat:backup")],
+        GridCheckRule::CheckAcceptedBudget {
+            offer_id: "bat:backup",
+            max_watts: 1500,
+        },
+    ));
     sys.add_promise(Promise::accept(
         "hosp:draw",
         "hospital",
@@ -80,31 +124,34 @@ fn build_microgrid() -> PromiseSystem<&'static str, &'static str, GridAlgebra> {
             watts: 1000,
         },
     ));
+    // Unique-provider check expressed natively via pure `Cond` (exactly 1 active provider):
+    sys.add_promise(
+        Promise::offer(
+            "hosp:unique_source",
+            "hospital",
+            AgentSet::All,
+            PowerOffer::WithinLimit,
+        )
+        .when(Cond::all(vec![
+            Cond::assisted_quorum("hosp:draw", 1),
+            !Cond::assisted_quorum("hosp:draw", 2),
+        ])),
+    );
     sys
 }
 
 #[test]
-fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
+fn domain_microgrid_stratified_failover_self_assessment_and_native_monitors() {
     let mut sys = build_microgrid();
 
-    // Type-safe static upper-bound discharge (Lean theorem `static_discharge_universal`):
-    // Even though `bat:backup` is OFF under optimistic α, `StaticUpperBound` includes
-    // its worst-case 1000W hospital load and proves 1000W <= 1500W for ALL runtime scenarios α!
-    let upper = sys.static_upper_bound();
-    assert!(
-        upper
-            .discharge_valency("bat:backup", 1500_u32, |b| b.overlap)
-            .is_ok()
-    );
-
-    // Normal operation: mains kept -> battery backup stays off; hospital uniquely uses grid.
+    // Normal operation: mains kept -> battery backup stays off; hospital has exactly 1 source.
     let r_normal = sys.resolve_optimistic().expect("stratified");
     assert!(r_normal.is_quenched("grid:mains"));
     assert!(!r_normal.is_quenched("bat:backup"));
-    assert!(
-        ResolutionView::new(&sys, &r_normal)
-            .check_unique_provider("hosp:draw")
-            .is_ok()
+    assert!(r_normal.is_quenched("hosp:unique_source"));
+    assert_eq!(
+        r_normal.offer("bat:within_limit"),
+        Some(&PowerOffer::WithinLimit)
     );
 
     // Consistent self-assessment: if battery's own sensor `bat:sense_grid` fails,
@@ -114,53 +161,44 @@ fn domain_microgrid_stratified_failover_self_assessment_and_static_discharge() {
         .expect("stratified");
     assert!(r_sensor_fail.is_quenched("bat:backup"));
 
-    // Outage: mains broken -> battery backup quenches; 1000W <= 1500W valency holds.
+    // Outage: mains broken -> battery backup quenches; 1000W <= 1500W stays within limit.
     let r_outage = sys.resolve(|_, p| *p != "grid:mains").expect("stratified");
     assert!(r_outage.is_quenched("bat:backup"));
+    assert!(r_outage.is_quenched("hosp:unique_source"));
+    assert_eq!(
+        r_outage.offer("bat:within_limit"),
+        Some(&PowerOffer::WithinLimit)
+    );
     assert!(
         r_outage
             .bindings
             .iter()
             .any(|b| b.offer_id == "bat:backup" && b.consumer == "hospital" && b.overlap == 1000)
     );
-    assert!(
-        ResolutionView::new(&sys, &r_outage)
-            .check_valency("bat:backup", 1500_u32, |b| b.overlap)
-            .is_ok()
+
+    // Add 800W factory load -> native Stratum-1 monitor `bat:within_limit` trips (`None`)!
+    sys.add_promise(
+        Promise::accept(
+            "fact:draw",
+            "factory",
+            AgentSet::of(["grid", "battery"]),
+            PowerUse {
+                voltage: 230,
+                watts: 800,
+            },
+        )
+        .with_scope(AgentSet::All),
     );
-
-    // Add 800W factory load -> `StaticUpperBound` IMMEDIATELY catches the hidden blackout
-    // overdraw (1800W > 1500W) even though optimistic α draws 0W from `bat:backup`!
-    sys.add_promise(Promise::accept(
-        "fact:draw",
-        "factory",
-        AgentSet::of(["grid", "battery"]),
-        PowerUse {
-            voltage: 230,
-            watts: 800,
-        },
-    ));
-    let static_err = sys
-        .static_upper_bound()
-        .discharge_valency("bat:backup", 1500_u32, |b| b.overlap)
-        .expect_err("static upper bound catches blackout overdraw");
-    assert_eq!(static_err.used, 1800);
-    assert_eq!(static_err.capacity, 1500);
-
     let r_overload = sys.resolve(|_, p| *p != "grid:mains").expect("stratified");
-    let err = ResolutionView::new(&sys, &r_overload)
-        .check_valency("bat:backup", 1500_u32, |b| b.overlap)
-        .expect_err("expected budget deficit");
-    let dyn_err: &dyn core::error::Error = &err;
-    assert!(dyn_err.to_string().contains("1800"));
-    assert_eq!(err.used, 1800);
-    assert_eq!(err.capacity, 1500);
+    assert!(!r_overload.is_quenched("bat:within_limit"));
 
-    // Observer-local split blackout: battery sees grid down while factory sees grid up.
+    // Observer-local split blackout: battery sees grid down while hospital & factory see grid up;
+    // hospital now sees 2 providers (grid + battery), so `hosp:unique_source` unquenches!
     let r_split = sys
         .resolve(|obs, p| !(*obs == "battery" && *p == "grid:mains"))
         .expect("stratified");
     assert!(r_split.is_quenched("bat:backup"));
+    assert!(!r_split.is_quenched("hosp:unique_source"));
     assert!(
         r_split
             .bindings
@@ -459,11 +497,8 @@ fn build_alloc_bank_system() -> Result<
 }
 
 #[test]
-fn domain_value_derived_provider_allocation_channel_sharpness_and_grouped_budget() {
+fn domain_value_derived_provider_allocation_and_channel_sharpness() {
     let mut sys = build_alloc_bank_system().expect("acyclic");
-
-    // Mixed derived systems honestly return `None` from `try_static_upper_bound()`.
-    assert!(sys.try_static_upper_bound().is_none());
 
     // Round-trip `clinic:req -> bank:recv -> bank:grant_clinic -> clinic:draw -> clinic:ack -> bank:recv_ack`
     // stratifies cleanly thanks to `may_overlap` AND never double-counts duplicate `Obs`!
@@ -481,30 +516,13 @@ fn domain_value_derived_provider_allocation_channel_sharpness_and_grouped_budget
         })
     );
     assert!(!r.is_quenched("clinic:diesel"));
-
-    // Heterogeneous `Cap<u32>` budget checks `bank` <= 1500W and `clinic` unbounded in ONE pass!
-    let view = ResolutionView::new(&sys, &r);
-    assert!(
-        view.check_budget(
-            |_, b| Some((b.promiser, Cap::Bounded(b.overlap))),
-            |p| match *p {
-                "bank" => Cap::Bounded(1500_u32),
-                _ => Cap::Unbounded,
-            }
-        )
-        .is_ok()
-    );
-    assert_eq!(
-        view.check_budget(
-            |_, b| (b.promiser == "bank").then_some((b.promiser, Cap::Bounded(b.overlap))),
-            |_| Cap::Bounded(1400_u32)
-        ),
-        Err(BudgetDeficit {
-            group: "bank",
-            used: Cap::Bounded(1500),
-            capacity: Cap::Bounded(1400),
-        })
-    );
+    let total_bank_grants: u32 = r
+        .bindings
+        .iter()
+        .filter(|b| b.promiser == "bank")
+        .map(|b| b.overlap)
+        .sum();
+    assert_eq!(total_bank_grants, 1500);
 
     // Strict clinic (min 800W) rejects 500W -> diesel fires; solo clinic gets 800W -> diesel off.
     sys.add_promise(
@@ -810,199 +828,157 @@ impl BodyAlgebra for CloudAlg {
     }
 }
 
-fn build_tenancy_fleet()
--> Result<PromiseSystem<&'static str, &'static str, CloudAlg>, HierarchyError<&'static str>> {
-    let mut sys = PromiseSystem::new(CloudAlg);
-    sys.add_superagent("host1", false);
-    sys.contain("host1", "tenant1")?;
-    sys.add_superagent("host2", false);
-    sys.contain("host2", "tenant2")?;
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CloudRule {
+    ExclusiveLease { tenant: &'static str, port: u16 },
+    InteriorUseCount { use_id: &'static str },
+}
 
-    sys.add_promise(Promise::accept(
-        "h1:accept_terms",
-        "host1",
-        AgentSet::All,
-        CloudSvc::Terms,
-    ));
+impl DeriveAlgebra<&'static str, &'static str, CloudRule> for CloudAlg {
+    fn may_overlap(
+        &self,
+        offer: SpecRef<'_, CloudSvc, CloudRule>,
+        use_: SpecRef<'_, CloudSvc, CloudRule>,
+    ) -> bool {
+        matches!(
+            (offer, use_),
+            (
+                SpecRef::Derived(CloudRule::ExclusiveLease { .. }),
+                SpecRef::Fixed(CloudSvc::Slot { .. })
+            )
+        )
+    }
+
+    fn derive_offer(
+        &self,
+        rule: &CloudRule,
+        obs: &LocalView<'_, &'static str, &'static str, Self>,
+    ) -> Option<CloudSvc> {
+        match rule {
+            CloudRule::ExclusiveLease { tenant, port } => {
+                let mut winners: Vec<(&'static str, u8)> = obs
+                    .assisted("h1:recv_reqs")
+                    .filter_map(|e| match e.overlap {
+                        (Some(p), Some(ver)) if p == *port => Some((*e.promiser, ver)),
+                        _ => None,
+                    })
+                    .collect();
+                winners.sort_by_key(|(a, _)| *a);
+                let (first, proto_ver) = winners.first().copied()?;
+                (first == *tenant).then_some(CloudSvc::Slot {
+                    port: *port,
+                    proto_ver,
+                })
+            }
+            CloudRule::InteriorUseCount { use_id } => {
+                // Exercises symmetric `LocalView::interior_use`!
+                obs.interior_use(*use_id).map(|_| CloudSvc::Power)
+            }
+        }
+    }
+}
+
+#[test]
+fn domain_tenancy_exclusive_port_leasing_protocol_alignment_and_interior_use() {
+    let mut sys = PromiseSystem::with_rules(CloudAlg);
+    sys.add_superagent("host1", false);
+    sys.contain("host1", "tenant1").expect("acyclic");
+    sys.contain("host1", "tenant2").expect("acyclic");
+    sys.contain("host1", "tenant_v3").expect("acyclic");
+
     sys.add_promise(
-        Promise::offer(
-            "h1:slot_80",
+        Promise::accept("h1:accept_terms", "host1", AgentSet::All, CloudSvc::Terms)
+            .with_scope(AgentSet::All),
+    );
+    sys.add_promise(
+        Promise::accept(
+            "h1:recv_reqs",
             "host1",
-            AgentSet::All,
+            AgentSet::of(["tenant1", "tenant2", "tenant_v3"]),
             CloudSvc::Slot {
                 port: 80,
                 proto_ver: 2,
             },
         )
-        .when(Cond::assisted("h1:accept_terms")),
+        .with_scope(AgentSet::All),
     );
-    sys.add_promise(
-        Promise::offer("h1:power", "host1", AgentSet::All, CloudSvc::Power)
-            .when(Cond::accepted("h1:slot_80")),
-    );
+    for (t, req, use_id, lease) in [
+        ("tenant1", "t1:req", "t1:use", "h1:lease_t1"),
+        ("tenant2", "t2:req", "t2:use", "h1:lease_t2"),
+    ] {
+        sys.add_promise(Promise::offer(
+            req,
+            t,
+            AgentSet::single("host1"),
+            CloudSvc::Slot {
+                port: 80,
+                proto_ver: 2,
+            },
+        ));
+        sys.add_promise(Promise::accept(
+            use_id,
+            t,
+            AgentSet::single("host1"),
+            CloudSvc::Slot {
+                port: 80,
+                proto_ver: 2,
+            },
+        ));
+        sys.add_promise(
+            Promise::derive_offer(
+                lease,
+                "host1",
+                AgentSet::single(t),
+                [Obs::assisted("h1:recv_reqs")],
+                CloudRule::ExclusiveLease {
+                    tenant: t,
+                    port: 80,
+                },
+            )
+            .when(Cond::assisted("h1:accept_terms")),
+        );
+    }
+    // Protocol version mismatch (`proto_ver: 3`) is rejected directly by `BodyAlgebra::overlap`.
+    sys.add_promise(Promise::offer(
+        "t3:req",
+        "tenant_v3",
+        AgentSet::single("host1"),
+        CloudSvc::Slot {
+            port: 80,
+            proto_ver: 3,
+        },
+    ));
     sys.add_promise(Promise::offer(
         "t1:terms",
         "tenant1",
         AgentSet::single("host1"),
         CloudSvc::Terms,
     ));
-    sys.add_promise(Promise::accept(
-        "t1:use_slot",
-        "tenant1",
-        AgentSet::single("host1"),
-        CloudSvc::Slot {
-            port: 80,
-            proto_ver: 2,
-        },
-    ));
-    sys.add_promise(Promise::offer(
-        "h2:slot_80",
-        "host2",
-        AgentSet::single("tenant2"),
-        CloudSvc::Slot {
-            port: 80,
-            proto_ver: 2,
-        },
-    ));
-    sys.add_promise(Promise::accept(
-        "t2:use_slot",
-        "tenant2",
-        AgentSet::single("host2"),
-        CloudSvc::Slot {
-            port: 80,
-            proto_ver: 2,
-        },
-    ));
-    Ok(sys)
-}
-
-#[test]
-fn domain_tenancy_static_discharge_cardinality_and_monoid_cap() {
-    let sys = build_tenancy_fleet().expect("acyclic");
-
-    // Static upper-bound discharge via `try_static_upper_bound()` and `static_upper_bound()`.
-    assert!(sys.try_static_upper_bound().is_some());
-    let upper = sys.static_upper_bound();
-    assert!(
-        upper
-            .discharge_disjoint(|s, b| {
-                let port = b.overlap.0?;
-                let host = s.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
-                Some((host, port))
-            })
-            .is_ok()
+    sys.add_promise(
+        Promise::offer("h1:power", "host1", AgentSet::All, CloudSvc::Power)
+            .when(Cond::accepted("h1:lease_t1")),
     );
-    assert!(
-        upper
-            .discharge_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
-            .is_ok()
-    );
+    sys.add_promise(Promise::derive_offer(
+        "h1:sees_t1_use",
+        "host1",
+        AgentSet::All,
+        [Obs::interior("t1:use")],
+        CloudRule::InteriorUseCount { use_id: "t1:use" },
+    ));
 
     let r = sys.resolve_optimistic().expect("stratified");
-    assert!(r.is_quenched("h1:slot_80"));
+    assert_eq!(
+        r.offer("h1:lease_t1"),
+        Some(&CloudSvc::Slot {
+            port: 80,
+            proto_ver: 2
+        })
+    );
+    assert_eq!(r.offer("h1:lease_t2"), None);
     assert!(r.is_quenched("h1:power"));
     assert!(r.body("h1:power").is_some());
-
-    let view = ResolutionView::new(&sys, &r);
-    assert!(view.check_quorum("t1:use_slot", 1).is_ok());
-    assert_eq!(
-        view.check_quorum("t1:use_slot", 2),
-        Err(CardinalityViolation {
-            group: "t1:use_slot",
-            actual: 1,
-            min: 2,
-            max: None,
-        })
-    );
-    assert_eq!(
-        view.check_unique_provider("nonexistent"),
-        Err(CardinalityViolation {
-            group: "nonexistent",
-            actual: 0,
-            min: 1,
-            max: Some(1),
-        })
-    );
-    assert!(
-        view.check_cardinality(
-            [("t1:use_slot", 1, Some(1)), ("t2:use_slot", 1, Some(2))],
-            |_, b| Some(b.use_id)
-        )
-        .is_ok()
-    );
-    assert!(
-        view.check_valency(
-            "h1:slot_80",
-            (Cap::Bounded(1_usize), Cap::Unbounded::<u32>),
-            |_| (Cap::Bounded(1_usize), Cap::Unbounded::<u32>),
-        )
-        .is_ok()
-    );
-    assert!(!ResourceMonoid::le(
-        &Cap::Bounded(2_usize),
-        &Cap::Bounded(1_usize)
-    ));
-    assert!(ResourceMonoid::le(
-        &Cap::Bounded(999_usize),
-        &Cap::Unbounded
-    ));
-}
-
-#[test]
-fn domain_tenancy_collisions_and_agreement_drift() {
-    let mut sys = build_tenancy_fleet().expect("acyclic");
-    sys.contain("host1", "tenant1b").expect("acyclic");
-    sys.add_promise(Promise::accept(
-        "t1b:use_slot",
-        "tenant1b",
-        AgentSet::single("host1"),
-        CloudSvc::Slot {
-            port: 80,
-            proto_ver: 2,
-        },
-    ));
-    let r_collide = sys.resolve_optimistic().expect("stratified");
-    let err = ResolutionView::new(&sys, &r_collide)
-        .check_disjoint(|s, b| {
-            let port = b.overlap.0?;
-            let host = s.parent_of(&b.consumer).copied().unwrap_or(b.promiser);
-            Some((host, port))
-        })
-        .expect_err("expected per-host port collision");
-    assert_eq!(err.key, ("host1", 80));
-
-    sys.add_promise(Promise::offer(
-        "h2:slot_443",
-        "host2",
-        AgentSet::single("tenant2"),
-        CloudSvc::Slot {
-            port: 443,
-            proto_ver: 3,
-        },
-    ));
-    sys.add_promise(Promise::accept(
-        "t2:use_443",
-        "tenant2",
-        AgentSet::single("host2"),
-        CloudSvc::Slot {
-            port: 443,
-            proto_ver: 3,
-        },
-    ));
-    let r_disagree = sys.resolve_optimistic().expect("stratified");
-    let conflict = ResolutionView::new(&sys, &r_disagree)
-        .check_agreement(|_, b| b.overlap.1.map(|ver| ((), ver)))
-        .expect_err("expected protocol version disagreement");
-    assert_eq!(
-        conflict,
-        AgreementConflict {
-            group: (),
-            first_value: 2,
-            first_binding: ("h1:slot_80", "t1:use_slot"),
-            conflicting_value: 3,
-            conflicting_binding: ("h2:slot_443", "t2:use_443"),
-        }
-    );
+    assert_eq!(r.offer("h1:sees_t1_use"), Some(&CloudSvc::Power));
+    assert!(!r.bindings.iter().any(|b| b.offer_id == "t3:req"));
 }
 
 #[test]

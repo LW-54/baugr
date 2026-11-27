@@ -1,5 +1,5 @@
 //! Cedar VGD Differential Randomized Testing (Rust `baugr` ↔ Lean 4 `baugr-oracle`)
-//! plus standalone randomized property verification of all formal theorems (T1–T8).
+//! plus standalone randomized property verification of all formal theorems (T1–T7).
 //!
 //! - Always runs 500 randomized property checks covering BOTH static promises AND
 //!   value-derived conditional promises (`+f(obs) | C` / `-f(obs) | C` with all 4

@@ -1,6 +1,5 @@
-//! Pure Promise Theory algebra: offers, acceptances, mutual-information overlap,
-//! boolean and value-dependent conditional quenching (`+f(obs) | C`), observer-local
-//! assessments, and dressed superagents.
+//! Pure Promise Theory algebra: static and value-derived conditional promises
+//! (`±b | C`, `±f(obs) | C`), observer-local assessments, and dressed superagents.
 //!
 //! Derived directly from Bergstra & Burgess (`arXiv:0810.3294v5`, `1401.3381v1`,
 //! `1411.5563`, `1505.01716v1`, `1608.02193`, `2606.08552v1`) and mirrored 1:1
@@ -358,6 +357,18 @@ impl<'a, A, P, D: BodyAlgebra + ?Sized> LocalView<'a, A, P, D> {
             _ => None,
         }
     }
+
+    /// Looks up an observed interior sub-agent acceptance/use `(promiser, use_body)` by identifier.
+    #[must_use]
+    pub fn interior_use<Q: ?Sized + Eq>(&self, id: &Q) -> Option<(&'a A, &'a D::Use)>
+    where
+        P: Borrow<Q>,
+    {
+        match self.interior_body(id) {
+            Some((a, Body::Use(u))) => Some((a, u)),
+            _ => None,
+        }
+    }
 }
 
 /// Set of agents used for promisee targeting (`target`) and witness visibility (`scope`).
@@ -504,7 +515,7 @@ impl<A: Ord + Clone, P, O, U, R> Promise<A, P, O, U, R> {
         }
     }
 
-    /// Attaches a boolean quenching condition (`+b | cond`, `-b | cond`, or `+f(obs) | cond`).
+    /// Attaches a boolean quenching condition (`±b | cond` or `±f(obs) | cond`).
     #[must_use]
     pub fn when(mut self, cond: Cond<P>) -> Self {
         self.cond = cond;

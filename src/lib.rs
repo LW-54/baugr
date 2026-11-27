@@ -31,9 +31,9 @@
 //! ## Modules
 //! - [`promise`]: Autonomous agents, unified polarity & static/derived specifications
 //!   (`Body<Spec<P, O, R>, Spec<P, U, R>>`), mutual-information overlap (`b₁ ∩ b₂`),
-//!   boolean and value-dependent conditional quenching (`+f(obs) | C`) over canonical
-//!   deduplicated observations, observer-local assessments `α(a, π)`, and recursively
-//!   sealed opaque/transparent superagents.
+//!   boolean and value-dependent conditional quenching (`±b | C`, `±f(obs) | C`) over
+//!   canonical deduplicated observations, observer-local assessments `α(a, π)`, and
+//!   recursively sealed opaque/transparent superagents.
 //! - [`spacetime`]: Strict typed Semantic Spacetime γ(3,4) with 3 node
 //!   meta-types (`Event`, `Thing`, `Concept`), 4 signed link meta-types
 //!   (`Near`, `±LeadsTo`, `±Contains`, `±Expresses`), dual-link normalized
@@ -42,26 +42,16 @@
 //! - [`projection`]: Canonical well-formed functor `Φ : PromiseSystem -> γ(3,4)`
 //!   (with event-horizon vertex-cut separation across opaque walls) and superagent
 //!   coarse-graining directories.
-//! - [`law`]: Ordered-commutative-monoid Promise Valency with top-completion [`Cap`] (`R⊤`),
-//!   four orthogonal composable [`law::ScopeLaw`]s (`BudgetBy`, `DisjointBy`, `AgreementBy`,
-//!   `CardinalityBy`), and compile-time-checked [`StaticUpperBound`] universal discharge
-//!   via [`DownwardClosedLaw`].
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
-pub mod law;
 pub mod projection;
 pub mod promise;
 pub mod spacetime;
 
-pub use law::{
-    AgreementBy, AgreementConflict, BudgetBy, BudgetDeficit, Cap, CardinalityBy,
-    CardinalityViolation, DisjointBy, DisjointViolation, DownwardClosedLaw, ResolutionView,
-    ResourceMonoid, ScopeLaw, StaticUpperBound,
-};
 pub use projection::{CoarseGrainingDirectory, SstNode, directory_of, project_sst};
 pub use promise::{
     AgentSet, AlgebraBody, AlgebraPromise, Binding, Body, BodyAlgebra, Cond, ConditionWarning,

@@ -1,19 +1,16 @@
 //! [`PromiseSystem`] builder, precomputed static compatibility index,
-//! autonomy- & boundary-guarded dependency extraction, complete static linting,
-//! and type-safe static upper-bound construction.
+//! autonomy- & boundary-guarded dependency extraction, and complete static linting.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::fmt;
 
-use crate::law::StaticUpperBound;
-
 use super::cond::{Cond, Obs};
 use super::hierarchy::{Hierarchy, HierarchyError};
 use super::{
-    AgentSet, AlgebraPromise, Binding, Body, BodyAlgebra, ConditionWarning, DeriveAlgebra,
-    IncompleteInfoWarning, Promise, PromiseMap, Resolved, Spec,
+    AgentSet, AlgebraPromise, Body, BodyAlgebra, ConditionWarning, DeriveAlgebra,
+    IncompleteInfoWarning, Promise, PromiseMap, Spec,
 };
 
 /// Precomputed conservative static offer↔use compatibility index for a [`PromiseSystem`].
@@ -31,7 +28,7 @@ pub struct CompatIndex<P> {
 ///
 /// The rule type parameter `R` defaults to [`Infallible`] for purely static systems
 /// (constructed via [`PromiseSystem::new`]). Systems using value-derived promises
-/// (`+f(obs) | C`) instantiate `R` via [`PromiseSystem::with_rules`].
+/// (`±f(obs) | C`) instantiate `R` via [`PromiseSystem::with_rules`].
 pub struct PromiseSystem<A, P, D: BodyAlgebra, R = Infallible> {
     pub(crate) hierarchy: Hierarchy<A>,
     pub(crate) promises: PromiseMap<A, P, D, R>,
@@ -82,27 +79,11 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra> PromiseSystem<A, P, D, Infa
     pub const fn new(algebra: D) -> Self {
         Self::with_rules(algebra)
     }
-
-    /// Computes the maximal static upper-bound binding view `B_max(S)` across all
-    /// statically compatible offer–use pairs (ignoring conditions and `α`).
-    ///
-    /// Returns a type-safe [`StaticUpperBound`] whose `.discharge(&law)` method accepts
-    /// **only** [`crate::DownwardClosedLaw`]s (`BudgetBy`, `DisjointBy`, `AgreementBy`),
-    /// enforcing the exact precondition of Lean 4 theorem `static_discharge_universal`
-    /// at compile time.
-    #[must_use]
-    pub fn static_upper_bound(&self) -> StaticUpperBound<'_, A, P, D, Infallible>
-    where
-        D::Offer: Clone,
-        D::Use: Clone,
-    {
-        self.build_static_upper_bound()
-    }
 }
 
 impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R> {
     /// Creates an empty promise system supporting both static promises and value-derived
-    /// conditional promises parameterized by rule type `R`.
+    /// conditional promises (`±f(obs) | C`) parameterized by rule type `R`.
     #[must_use]
     pub const fn with_rules(algebra: D) -> Self {
         Self {
@@ -110,76 +91,6 @@ impl<A: Ord + Clone, P: Ord + Clone, D: BodyAlgebra, R> PromiseSystem<A, P, D, R
             promises: BTreeMap::new(),
             algebra,
         }
-    }
-
-    /// Attempts to build a type-safe [`StaticUpperBound`] `B_max(S)` for universal static
-    /// discharge. Returns `Some(...)` if every registered promise has a static [`Spec::Fixed`]
-    /// body, or `None` if any promise uses [`Spec::Derived`] (whose runtime overlap cannot be
-    /// statically materialized).
-    #[must_use]
-    pub fn try_static_upper_bound(&self) -> Option<StaticUpperBound<'_, A, P, D, R>>
-    where
-        D::Offer: Clone,
-        D::Use: Clone,
-    {
-        if self.promises.values().any(Promise::is_derived) {
-            return None;
-        }
-        Some(self.build_static_upper_bound())
-    }
-
-    fn build_static_upper_bound(&self) -> StaticUpperBound<'_, A, P, D, R>
-    where
-        D::Offer: Clone,
-        D::Use: Clone,
-    {
-        let mut bodies = BTreeMap::new();
-        for (pid, pr) in &self.promises {
-            match &pr.body {
-                Body::Offer(Spec::Fixed(o)) => {
-                    bodies.insert(pid.clone(), Body::Offer(o.clone()));
-                }
-                Body::Use(Spec::Fixed(u)) => {
-                    bodies.insert(pid.clone(), Body::Use(u.clone()));
-                }
-                _ => {}
-            }
-        }
-
-        let mut bindings = Vec::new();
-        for po in self.promises.values() {
-            let Body::Offer(Spec::Fixed(ob)) = &po.body else {
-                continue;
-            };
-            for pu in self.promises.values() {
-                let Body::Use(Spec::Fixed(ub)) = &pu.body else {
-                    continue;
-                };
-                if po.target.contains(&pu.promiser)
-                    && po.in_scope(&pu.promiser)
-                    && pu.target.contains(&po.promiser)
-                    && self.hierarchy.no_opaque_wall(&po.promiser, &pu.promiser)
-                    && let Some(ov) = self.algebra.overlap(ob, ub)
-                {
-                    bindings.push(Binding {
-                        offer_id: po.id.clone(),
-                        use_id: pu.id.clone(),
-                        promiser: po.promiser.clone(),
-                        consumer: pu.promiser.clone(),
-                        overlap: ov,
-                    });
-                }
-            }
-        }
-
-        StaticUpperBound::new(
-            self,
-            Resolved {
-                bodies,
-                bindings,
-                strata: BTreeMap::new(),
-            },
-        )
     }
 
     /// Registers an autonomous agent.

@@ -42,12 +42,3 @@ import Baugr
 #print axioms Baugr.opaque_interior_perturbation_contained
 #print axioms Baugr.opaque_no_direct_causal_crossing
 #print axioms Baugr.opaque_event_horizon_cut
-
--- T8: Monoidal Valency (`Cap R`), Grouped Budgets, Composable ScopeLaws & Universal Static Discharge
-#print axioms Baugr.valency_withdrawal_safe
-#print axioms Baugr.allLaws_cons
-#print axioms Baugr.activeBindings_sublist_staticMax
-#print axioms Baugr.static_discharge_universal
-#print axioms Baugr.budget_downward_closed
-#print axioms Baugr.disjoint_downward_closed
-#print axioms Baugr.agreement_downward_closed
